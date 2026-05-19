@@ -3,7 +3,9 @@
  * MCP server for Polish court judgments - SAOS (System Analizy Orzeczen Sadowych).
  *
  * Public REST API by Fundacja ePanstwo. No API key required.
- * Historical archive (~up to 2016-2018). NOT a live current-judgments source.
+ * Broad coverage including current judgments (2024-2026 well populated).
+ * Coverage is uneven by court type; administrative courts (WSA/NSA) are absent.
+ * Note: OCR artifacts can produce malformed dates - verify in the source.
  *
  * Tools exposed:
  *   search          - full-text / filtered search over /api/search/judgments
@@ -139,7 +141,11 @@ async function saosSearch(params: SearchParams): Promise<unknown> {
     query.referencedRegulation = params.referencedRegulation;
   if (params.legalBase) query.legalBase = params.legalBase;
   if (params.judgmentDateFrom) query.judgmentDateFrom = params.judgmentDateFrom;
-  if (params.judgmentDateTo) query.judgmentDateTo = params.judgmentDateTo;
+  // Default the upper date bound to today. SAOS data contains OCR-mangled
+  // dates (e.g. year 3013) which, under DESC date sorting, would otherwise
+  // occupy the top result slots and push genuine recent judgments off-page.
+  query.judgmentDateTo =
+    params.judgmentDateTo ?? new Date().toISOString().slice(0, 10);
 
   const qs = new URLSearchParams(query).toString();
   return fetchJson(`${SAOS_BASE}/search/judgments?${qs}`);
@@ -183,14 +189,17 @@ function formatSearchResults(raw: unknown): string {
   if (items.length === 0) {
     return (
       "Brak wynikow w bazie SAOS dla podanych kryteriow.\n\n" +
-      "Uwaga: SAOS to archiwum historyczne (dane glownie do ok. 2016-2018). " +
-      "Do biezacego orzecznictwa uzyj portali sadow: sn.pl, orzeczenia.ms.gov.pl, trybunal.gov.pl."
+      "Uwaga: pokrycie SAOS jest nierowne wg typu sadu. Sady administracyjne " +
+      "(WSA/NSA) nie sa indeksowane - dla orzeczen administracyjnych uzyj " +
+      "orzeczenia.nsa.gov.pl. Sprobuj tez innych slow kluczowych lub szerszego zakresu dat."
     );
   }
 
   const lines: string[] = [
     `Znalezione: ${total} orzeczen (pokazano ${items.length}).`,
-    "Uwaga: SAOS to archiwum historyczne - dane glownie do ok. 2016-2018.",
+    "Uwaga: daty bywaja znieksztalcone przez OCR (np. rok 3013) - przy " +
+      "sortowaniu wg daty weryfikuj sygnature i date w zrodle. Sady " +
+      "administracyjne (WSA/NSA) nie sa w SAOS.",
     "",
   ];
 
@@ -271,7 +280,7 @@ function formatJudgment(raw: unknown): string {
   const textPreview = textRaw.slice(0, 2000);
 
   const lines: string[] = [
-    "=== ORZECZENIE SAOS (archiwum historyczne, glownie do ok. 2016-2018) ===",
+    "=== ORZECZENIE SAOS ===",
     "",
     `Sygnatura  : ${sig}`,
     `ID SAOS    : ${d.id}`,
@@ -316,9 +325,10 @@ const TOOLS = [
     name: "search",
     description:
       "Przeszukuje baze orzeczen sadow polskich w SAOS (System Analizy Orzeczen Sadowych). " +
-      "WAZNE: SAOS to archiwum historyczne - dane siegaja glownie do ok. 2016-2018 (SN) i ok. 2018 (KIO). " +
-      "NIE nadaje sie do orzeczen biezacych. Nie indeksuje sadow administracyjnych (WSA/NSA). " +
-      "Przydatny do: analizy linii orzeczniczej, precedensow, orzeczen historycznych, " +
+      "Pokrycie obejmuje takze orzeczenia biezace (lata 2024-2026 sa dobrze reprezentowane), " +
+      "ale jest nierowne wg typu sadu. Sady administracyjne (WSA/NSA) NIE sa indeksowane. " +
+      "Daty bywaja znieksztalcone przez OCR - weryfikuj sygnature i date w zrodle. " +
+      "Przydatny do: analizy linii orzeczniczej, precedensow, " +
       "wyszukiwania po tresci / sygnatuze / sedzim / podstawie prawnej.",
     inputSchema: {
       type: "object",
@@ -381,7 +391,6 @@ const TOOLS = [
       "Pobiera pelne orzeczenie z SAOS po jego numerycznym ID. " +
       "Zwraca metadane (sygnatura, sad, data, sklad, podstawy prawne), " +
       "streszczenie (jesli dostepne) oraz pierwsze 2000 znakow tresci. " +
-      "WAZNE: SAOS to archiwum historyczne - dane glownie do ok. 2016-2018. " +
       "ID orzeczenia pochodzi z wynikow narzedzia 'search' lub 'search_by_case'.",
     inputSchema: {
       type: "object",
@@ -399,8 +408,8 @@ const TOOLS = [
     description:
       "Skrot: szuka orzeczenia po sygnaturze akt (np. 'I ACa 772/13', 'IV CSK 123/15', 'KIO/UZP 100/12'). " +
       "Odpowiednik search z parametrem caseNumber. " +
-      "WAZNE: SAOS to archiwum historyczne - dane glownie do ok. 2016-2018. " +
-      "Jesli sygnatura nie znajdzie sie w SAOS, sprawa moze byc nowsza lub z sadu administracyjnego.",
+      "Jesli sygnatura nie znajdzie sie w SAOS, sprawa moze byc z sadu administracyjnego " +
+      "(WSA/NSA - nieindeksowane) lub jeszcze nieopublikowana w bazie.",
     inputSchema: {
       type: "object",
       properties: {
