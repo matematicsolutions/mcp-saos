@@ -317,6 +317,76 @@ function formatJudgment(raw: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
+// Structured citations builders
+// ---------------------------------------------------------------------------
+//
+// Klient MCP (Patron) czyta result.structuredContent.citations zeby
+// wystawic w panelu UI liste powiazanych orzeczen obok streamowanej odpowiedzi.
+// Kontrakt: kazdy obiekt ma title (etykieta) i/lub url (zrodlo). Pozostale
+// pola sa swobodne i ladowane do metadata po stronie klienta.
+
+interface SaosCitation {
+  title: string;
+  url: string;
+  snippet?: string;
+  case_number?: string;
+  court?: string;
+  judgment_date?: string;
+  judgment_type?: string;
+  saos_id?: number;
+  court_type?: string;
+}
+
+function buildSearchCitations(raw: unknown): SaosCitation[] {
+  const data = raw as SearchResponse;
+  const items = data.items ?? [];
+  const out: SaosCitation[] = [];
+  for (const it of items) {
+    if (it.id === undefined) continue;
+    const sig = it.courtCases?.[0]?.caseNumber ?? "";
+    const courtName =
+      it.division?.court?.name ?? it.division?.name ?? it.courtType ?? "";
+    const date = it.judgmentDate ?? "";
+    const snippet = stripHtml(it.textContent ?? "").slice(0, 200);
+    const title = [sig, courtName].filter(Boolean).join(" - ") || `SAOS #${it.id}`;
+
+    out.push({
+      title,
+      url: `https://www.saos.org.pl/judgments/${it.id}`,
+      ...(snippet && { snippet }),
+      ...(sig && { case_number: sig }),
+      ...(courtName && { court: courtName }),
+      ...(date && { judgment_date: date }),
+      ...(it.judgmentType && { judgment_type: it.judgmentType }),
+      saos_id: it.id,
+      ...(it.courtType && { court_type: it.courtType }),
+    });
+  }
+  return out;
+}
+
+function buildJudgmentCitation(raw: unknown): SaosCitation | null {
+  const d = raw as JudgmentData;
+  if (d.id === undefined) return null;
+  const sig = d.courtCases?.[0]?.caseNumber ?? "";
+  const courtName =
+    d.division?.court?.name ?? d.division?.name ?? d.courtType ?? "";
+  const snippet = stripHtml(d.textContent ?? "").slice(0, 200);
+  const title = [sig, courtName].filter(Boolean).join(" - ") || `SAOS #${d.id}`;
+  return {
+    title,
+    url: `https://www.saos.org.pl/judgments/${d.id}`,
+    ...(snippet && { snippet }),
+    ...(sig && { case_number: sig }),
+    ...(courtName && { court: courtName }),
+    ...(d.judgmentDate && { judgment_date: d.judgmentDate }),
+    ...(d.judgmentType && { judgment_type: d.judgmentType }),
+    saos_id: d.id,
+    ...(d.courtType && { court_type: d.courtType }),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
 
@@ -459,7 +529,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           pageSize: a.pageSize as number | undefined,
           pageNumber: a.pageNumber as number | undefined,
         });
-        return { content: [{ type: "text", text: formatSearchResults(raw) }] };
+        return {
+          content: [{ type: "text", text: formatSearchResults(raw) }],
+          structuredContent: { citations: buildSearchCitations(raw) },
+        };
       }
 
       case "get_judgment": {
@@ -470,7 +543,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
         const raw = await saosGetJudgment(a.id as string | number);
-        return { content: [{ type: "text", text: formatJudgment(raw) }] };
+        const citation = buildJudgmentCitation(raw);
+        return {
+          content: [{ type: "text", text: formatJudgment(raw) }],
+          structuredContent: { citations: citation ? [citation] : [] },
+        };
       }
 
       case "search_by_case": {
@@ -484,7 +561,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           caseNumber: a.caseNumber as string,
           pageSize: PAGE_SIZE_DEFAULT,
         });
-        return { content: [{ type: "text", text: formatSearchResults(raw) }] };
+        return {
+          content: [{ type: "text", text: formatSearchResults(raw) }],
+          structuredContent: { citations: buildSearchCitations(raw) },
+        };
       }
 
       default:
