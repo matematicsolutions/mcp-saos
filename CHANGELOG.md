@@ -3,6 +3,18 @@
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) +
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-05-25
+
+Retrofit do kanonu MCP MateMatic (pattern z dograh-hq/dograh v1.31.0, BSD-2). **Backward-compatible** — istniejacy klienci dzialaja bez zmian.
+
+### Added
+
+- `instructions` w konstruktorze Server — procedural orchestration (kolejnosc wywolan, twarde ograniczenia: pokrycie nierowne / OCR daty / brak admin courts, iteracja po bledach, styl odpowiedzi). LLM widzi PRZED pierwszym tool call.
+- `ToolAnnotations` per tool — `readOnlyHint=true`, `idempotentHint=true`, `destructiveHint=false`. Klient MCP moze auto-approve wywolania bez monitu.
+- Strukturalne `ErrorCode` w odpowiedziach: `missing_arg`, `not_found`, `upstream_error`, `invalid_court_type`. Format `[code] tekst` w content + `structuredContent.error_code`.
+- Walidacja `courtType` przed wywolaniem upstream API — jasny komunikat dla ADMINISTRATIVE (sady admin w mcp-nsa, nie tu).
+- Drift test (`npm run drift`) — asercja spojnosci INSTRUCTIONS + ErrorCode + TOOLS + kodu errorResult().
+
 ## [1.0.0] — 2026-05-20
 
 Initial public release.

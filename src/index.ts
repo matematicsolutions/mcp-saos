@@ -387,19 +387,68 @@ function buildJudgmentCitation(raw: unknown): SaosCitation | null {
 }
 
 // ---------------------------------------------------------------------------
+// Instructions (procedural orchestration) - wstrzykiwane przez Server do
+// system promptu klienta MCP. LLM widzi PRZED pierwszym tool call.
+// Drift test (test/drift.mjs) failuje jesli tool wymieniony nie jest w
+// TOOLS, albo ErrorCode w typie TS nie udokumentowany w INSTRUCTIONS.
+// Pattern z dograh-hq/dograh v1.31.0 (BSD-2), zaadaptowany na MateMatic.
+// ---------------------------------------------------------------------------
+
+const INSTRUCTIONS = `Ten serwer MCP udostepnia orzeczenia polskich sadow z bazy SAOS (saos.org.pl) - sady powszechne, Sad Najwyzszy, Trybunal Konstytucyjny, KIO. Bez cache'owania, bez modyfikacji tresci - dane primary z API publicznego (Fundacja ePanstwo, bez klucza).
+
+## Kolejnosc wywolan
+
+### Szukanie orzecznictwa
+1. \`search_by_case\` - jesli uzytkownik podal sygnature akt (np. "I ACa 772/13", "IV CSK 123/15") - to skrot, najszybciej.
+2. \`search\` - szerokie szukanie po tresci, podstawie prawnej, sedzim, dacie, typie sadu. Zwraca paginowane wyniki (default 10/strona, max 100).
+3. \`get_judgment\` - pelne orzeczenie po ID numerycznym z wynikow search. Zwraca metadata + pierwsze 2000 znakow tresci.
+
+## Twarde ograniczenia
+
+- **Pokrycie nierowne** - sady powszechne dobrze, SN/TK/KIO obecne. **Sady administracyjne (WSA/NSA) NIE sa w SAOS** - dla nich uzyj mcp-nsa (orzeczenia.nsa.gov.pl).
+- **Daty znieksztalcone przez OCR** - mozesz zobaczyc "rok 3013" lub inne nielogiczne. Domyslny upper bound to dzisiaj, zeby OCR-mangled daty nie zalaly DESC sort. Weryfikuj sygnature i date w zrodle (saos.org.pl/judgments/{id}).
+- **Bez modyfikacji tresci** - zwracamy verbatim z SAOS. NIE prosc o parafraze "lepszym jezykiem" - to wartosc dowodowa.
+- **Stateless, bez cache PII** - kazde wywolanie idzie do upstream API. NIE polegaj na ciaglosci sesji - klient (Patron) sam zarzadza cache i retencja.
+- **\`structuredContent.citations\`** zawsze wypelnione: title, url (saos.org.pl/judgments/{id}), case_number, court, judgment_date, snippet. Cytuj te citations w odpowiedzi koncowej.
+
+## Iteracja po bledach
+
+Tool zwraca \`isError: true\` + tekst z prefixem \`[code]\`. Typowe kody:
+- \`missing_arg\` - brakujacy wymagany parametr (np. id w get_judgment, caseNumber w search_by_case). Przeczytaj inputSchema.
+- \`not_found\` - orzeczenie/sygnatura nie ma w SAOS. Sprobuj szerszej daty / innej sygnatury, lub czy to nie WSA/NSA (osobny konektor).
+- \`upstream_error\` - blad komunikacji z API SAOS (HTTP 5xx, timeout 40s). Retry raz przed surface do uzytkownika.
+- \`invalid_court_type\` - klient podal \`ADMINISTRATIVE\` lub inny niedozwolony typ. Dozwolone: COMMON, SUPREME, CONSTITUTIONAL_TRIBUNAL, NATIONAL_APPEAL_CHAMBER.
+
+## Styl odpowiedzi
+
+- Cytuj sygnature w pelnej formie z sadem: "I ACa 772/13 (SA Warszawa, 2013-09-15)".
+- Przy linii orzeczniczej (\`search\` z legalBase) sortuj wyniki chronologicznie i komentuj zmiany linii.
+- NIE wymyslaj sygnatur ani sklad ow sedziowskich - kazda informacja z \`structuredContent.citations\`.
+- Disclaimer SAOS (pokrycie nierowne, OCR daty, brak admin courts) zostaw w odpowiedzi przy szerokim szukaniu.`;
+
+// ---------------------------------------------------------------------------
 // Tool definitions
 // ---------------------------------------------------------------------------
+
+const READ_ONLY_ANNOTATIONS = {
+  readOnlyHint: true,
+  idempotentHint: true,
+  destructiveHint: false,
+  openWorldHint: true, // upstream API moze zwracac inne wyniki w czasie
+} as const;
 
 const TOOLS = [
   {
     name: "search",
+    annotations: READ_ONLY_ANNOTATIONS,
     description:
       "Przeszukuje baze orzeczen sadow polskich w SAOS (System Analizy Orzeczen Sadowych). " +
       "Pokrycie obejmuje takze orzeczenia biezace (lata 2024-2026 sa dobrze reprezentowane), " +
       "ale jest nierowne wg typu sadu. Sady administracyjne (WSA/NSA) NIE sa indeksowane. " +
       "Daty bywaja znieksztalcone przez OCR - weryfikuj sygnature i date w zrodle. " +
       "Przydatny do: analizy linii orzeczniczej, precedensow, " +
-      "wyszukiwania po tresci / sygnatuze / sedzim / podstawie prawnej.",
+      "wyszukiwania po tresci / sygnatuze / sedzim / podstawie prawnej. " +
+      "Bledy: `invalid_court_type` (zly enum), `upstream_error` (HTTP/timeout API).",
     inputSchema: {
       type: "object",
       properties: {
@@ -457,11 +506,13 @@ const TOOLS = [
   },
   {
     name: "get_judgment",
+    annotations: READ_ONLY_ANNOTATIONS,
     description:
       "Pobiera pelne orzeczenie z SAOS po jego numerycznym ID. " +
       "Zwraca metadane (sygnatura, sad, data, sklad, podstawy prawne), " +
       "streszczenie (jesli dostepne) oraz pierwsze 2000 znakow tresci. " +
-      "ID orzeczenia pochodzi z wynikow narzedzia 'search' lub 'search_by_case'.",
+      "ID orzeczenia pochodzi z wynikow narzedzia 'search' lub 'search_by_case'. " +
+      "Bledy: `missing_arg` (brak id), `not_found` (id poza baza), `upstream_error`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -475,11 +526,13 @@ const TOOLS = [
   },
   {
     name: "search_by_case",
+    annotations: READ_ONLY_ANNOTATIONS,
     description:
       "Skrot: szuka orzeczenia po sygnaturze akt (np. 'I ACa 772/13', 'IV CSK 123/15', 'KIO/UZP 100/12'). " +
       "Odpowiednik search z parametrem caseNumber. " +
       "Jesli sygnatura nie znajdzie sie w SAOS, sprawa moze byc z sadu administracyjnego " +
-      "(WSA/NSA - nieindeksowane) lub jeszcze nieopublikowana w bazie.",
+      "(WSA/NSA - nieindeksowane) lub jeszcze nieopublikowana w bazie. " +
+      "Bledy: `missing_arg` (brak caseNumber), `upstream_error`.",
     inputSchema: {
       type: "object",
       properties: {
@@ -497,9 +550,32 @@ const TOOLS = [
 // MCP Server setup
 // ---------------------------------------------------------------------------
 
+// Strukturalne kody bledow - drift test asercja ze kazdy tu uzyty jest
+// udokumentowany w INSTRUCTIONS i kazdy w errorResult() istnieje w typie.
+type ErrorCode =
+  | "missing_arg"
+  | "not_found"
+  | "upstream_error"
+  | "invalid_court_type";
+
+function errorResult(text: string, code: ErrorCode) {
+  return {
+    content: [{ type: "text" as const, text: `[${code}] ${text}` }],
+    structuredContent: { error_code: code },
+    isError: true,
+  };
+}
+
+const VALID_COURT_TYPES = new Set([
+  "COMMON",
+  "SUPREME",
+  "CONSTITUTIONAL_TRIBUNAL",
+  "NATIONAL_APPEAL_CHAMBER",
+]);
+
 const server = new Server(
-  { name: "mcp-saos", version: "1.0.0" },
-  { capabilities: { tools: {} } }
+  { name: "mcp-saos", version: "1.1.0" },
+  { capabilities: { tools: {} }, instructions: INSTRUCTIONS }
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -507,6 +583,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     name: t.name,
     description: t.description,
     inputSchema: t.inputSchema,
+    annotations: t.annotations,
   })),
 }));
 
@@ -517,6 +594,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   try {
     switch (name) {
       case "search": {
+        if (a.courtType && !VALID_COURT_TYPES.has(String(a.courtType))) {
+          return errorResult(
+            `courtType '${a.courtType}' niedozwolony. Uzyj: ${[...VALID_COURT_TYPES].join(", ")}. NIE uzywaj ADMINISTRATIVE (sady admin nie sa w SAOS - uzyj mcp-nsa).`,
+            "invalid_court_type"
+          );
+        }
         const raw = await saosSearch({
           all: a.all as string | undefined,
           caseNumber: a.caseNumber as string | undefined,
@@ -537,12 +620,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "get_judgment": {
         if (!a.id) {
-          return {
-            content: [{ type: "text", text: "Blad: parametr 'id' jest wymagany." }],
-            isError: true,
-          };
+          return errorResult("parametr 'id' jest wymagany.", "missing_arg");
         }
         const raw = await saosGetJudgment(a.id as string | number);
+        if (!raw || (typeof raw === "object" && Object.keys(raw).length === 0)) {
+          return errorResult(
+            `Orzeczenie ID ${a.id} nie znalezione w SAOS. Sprawdz ID przez 'search' / 'search_by_case' lub czy nie jest to sad administracyjny (WSA/NSA - uzyj mcp-nsa).`,
+            "not_found"
+          );
+        }
         const citation = buildJudgmentCitation(raw);
         return {
           content: [{ type: "text", text: formatJudgment(raw) }],
@@ -552,10 +638,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "search_by_case": {
         if (!a.caseNumber) {
-          return {
-            content: [{ type: "text", text: "Blad: parametr 'caseNumber' jest wymagany." }],
-            isError: true,
-          };
+          return errorResult("parametr 'caseNumber' jest wymagany.", "missing_arg");
         }
         const raw = await saosSearch({
           caseNumber: a.caseNumber as string,
@@ -568,22 +651,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
 
       default:
-        return {
-          content: [{ type: "text", text: `Nieznane narzedzie: ${name}` }],
-          isError: true,
-        };
+        return errorResult(`Nieznane narzedzie: ${name}`, "missing_arg");
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Blad komunikacji z API SAOS: ${msg}\n\nSprawdz polaczenie z internetem lub sprobuj ponownie za chwile.`,
-        },
-      ],
-      isError: true,
-    };
+    return errorResult(
+      `Blad komunikacji z API SAOS: ${msg}. Sprawdz polaczenie lub sprobuj ponownie.`,
+      "upstream_error"
+    );
   }
 });
 
