@@ -4,3 +4,8 @@ dist/
 *.d.ts.map
 .env
 *.log
+
+# Claude Code security-guidance plugin - per-user project-local overrides (nie do publikacji)
+.claude/*.local.*
+.claude/settings.local.json
+.claude/security/
