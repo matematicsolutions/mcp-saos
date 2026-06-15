@@ -60,7 +60,7 @@ Dodaj wpis do konfiguracji MCP swojego klienta (np. `mcp-servers.json`):
   "name": "saos",
   "transport": "stdio",
   "command": "node",
-  "args": ["C:/Users/Wieslaw/mcp-saos/dist/index.js"],
+  "args": ["C:/Users/<TWOJ-UZYTKOWNIK>/mcp-saos/dist/index.js"],
   "enabled": true
 }
 ```
