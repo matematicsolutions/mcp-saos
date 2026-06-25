@@ -1,6 +1,6 @@
 {
-  "name": "mcp-saos",
-  "version": "1.1.0",
+  "name": "@matematicsolutions/mcp-saos",
+  "version": "1.1.1",
   "description": "MCP server - Polish court judgments via SAOS API (System Analizy Orzeczen Sadowych)",
   "main": "dist/index.js",
   "scripts": {
@@ -9,7 +9,13 @@
     "dev": "ts-node src/index.ts",
     "drift": "node test/drift.mjs"
   },
-  "keywords": ["mcp", "saos", "orzecznictwo", "legal", "poland"],
+  "keywords": [
+    "mcp",
+    "saos",
+    "orzecznictwo",
+    "legal",
+    "poland"
+  ],
   "author": "MateMatic / Wieslaw Mazur",
   "license": "MIT",
   "dependencies": {
@@ -21,5 +27,20 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "mcpName": "io.github.matematicsolutions/mcp-saos",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/matematicsolutions/mcp-saos.git"
+  },
+  "bin": {
+    "mcp-saos": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
