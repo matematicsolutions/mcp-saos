@@ -574,7 +574,7 @@ const VALID_COURT_TYPES = new Set([
 ]);
 
 const server = new Server(
-  { name: "mcp-saos", version: "1.1.0" },
+  { name: "mcp-saos", version: "1.1.2" }, // keep in sync with package.json "version"
   { capabilities: { tools: {} }, instructions: INSTRUCTIONS }
 );
 
