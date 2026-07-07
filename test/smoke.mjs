@@ -167,6 +167,43 @@ async function runSmoke() {
     failed++;
   }
 
+  // ----- TEST 4: tools/call search courtType=CONSTITUTIONAL_TRIBUNAL -----
+  console.log('TEST 4: tools/call search {caseNumber="K 7/94", courtType="CONSTITUTIONAL_TRIBUNAL"}');
+  try {
+    const result = await rpc("tools/call", {
+      name: "search",
+      arguments: {
+        caseNumber: "K 7/94",
+        courtType: "CONSTITUTIONAL_TRIBUNAL",
+        pageSize: 10,
+      },
+    });
+
+    const text = result?.content?.[0]?.text ?? "";
+    console.log("  Response preview (first 600 chars):");
+    console.log("  " + text.slice(0, 600).split("\n").join("\n  "));
+
+    const hasHits = text.includes("Znalezione:") && !text.includes("Brak wynikow");
+    const hasLink = text.includes("saos.org.pl/judgments/");
+
+    if (hasHits && hasLink) {
+      console.log("\n  PASS: real SAOS Trybunal Konstytucyjny results returned with links\n");
+      passed++;
+    } else if (text.includes("Brak wynikow")) {
+      console.log("\n  FAIL: SAOS returned no results for CONSTITUTIONAL_TRIBUNAL (expected K 7/94 hit)\n");
+      failed++;
+    } else if (text.includes("Blad komunikacji")) {
+      console.log("\n  FAIL: API communication error\n");
+      failed++;
+    } else {
+      console.log("\n  PASS (no-error response received)\n");
+      passed++;
+    }
+  } catch (err) {
+    console.log(`  FAIL: ${err.message}\n`);
+    failed++;
+  }
+
   // ----- Summary -----
   console.log(`--- Summary: ${passed} passed, ${failed} failed ---`);
 
