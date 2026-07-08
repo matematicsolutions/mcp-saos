@@ -1,34 +1,34 @@
 # AGENTS.md - mcp-saos
 
-Plik standardu [agents.md](https://agents.md) (Linux Foundation / Agentic AI Foundation) - kanoniczne instrukcje dla agentow AI pracujacych z tym repozytorium. Czytany natywnie przez Cursor, Codex (OpenAI), Jules (Google), Devin / Windsurf, Aider, Amp, Factory, GitHub Copilot.
+An [agents.md](https://agents.md) standard file (Linux Foundation / Agentic AI Foundation) - the canonical instructions for AI agents working with this repository. Read natively by Cursor, Codex (OpenAI), Jules (Google), Devin / Windsurf, Aider, Amp, Factory, GitHub Copilot.
 
-## Cel projektu
+## Project goal
 
-Serwer **MCP (Model Context Protocol)** dla **orzecznictwa polskich sadow powszechnych, Sadu Najwyzszego, Trybunalu Konstytucyjnego i KIO** - przez API publicznej bazy SAOS (System Analizy Orzeczen Sadowych, `https://saos.org.pl`).
+An **MCP (Model Context Protocol)** server for **case law of the Polish common courts, the Sad Najwyzszy (Supreme Court), the Trybunal Konstytucyjny (Constitutional Tribunal), and the KIO (National Appeal Chamber)** - via the public SAOS (System Analizy Orzeczen Sadowych - the courts' public case-law database) API, `https://saos.org.pl`.
 
-Jeden z 5 konektorow polskiego prawa MateMatic: [`mcp-saos`](https://github.com/matematicsolutions/mcp-saos) (ten), [`mcp-nsa`](https://github.com/matematicsolutions/mcp-nsa), [`mcp-isap`](https://github.com/matematicsolutions/mcp-isap), [`mcp-krs`](https://github.com/matematicsolutions/mcp-krs), [`mcp-eu-sparql`](https://github.com/matematicsolutions/mcp-eu-sparql).
+One of MateMatic's 5 Polish-law connectors: [`mcp-saos`](https://github.com/matematicsolutions/mcp-saos) (this one), [`mcp-nsa`](https://github.com/matematicsolutions/mcp-nsa), [`mcp-isap`](https://github.com/matematicsolutions/mcp-isap), [`mcp-krs`](https://github.com/matematicsolutions/mcp-krs), [`mcp-eu-sparql`](https://github.com/matematicsolutions/mcp-eu-sparql).
 
-Konektor jest wpinany przez `mcp-servers.json` w dowolnym kliencie zgodnym z protokolem (Claude Code, Patron, Cursor, Codex, Continue itp.).
+The connector plugs in via `mcp-servers.json` in any protocol-compliant client (Claude Code, Patron, Cursor, Codex, Continue, etc.).
 
-## Kontekst MateMatic (TWARDE OGRANICZENIA)
+## MateMatic context (HARD CONSTRAINTS)
 
-Repo prowadzi [MateMatic Solutions](https://matematicsolutions.com). Konektor jest **infrastruktura zaufania** - obsluguje go dowolny produkt LegalTech wymagajacy cytowan z polskiego orzecznictwa.
+The repo is run by [MateMatic Solutions](https://matematicsolutions.com). The connector is **trust infrastructure** - it serves any LegalTech product that needs citations from Polish case law, in any jurisdiction.
 
-- **Kazde wywolanie narzedzia MUSI zwracac `structuredContent.citations`** z: tytulem orzeczenia, URL kanonicznym (SAOS), sadem, data, sygnatura. To kontrakt produktu.
-- **Bez cache'owania danych klienta** - konektor jest stateless, nie loguje zapytan.
-- **Bez modyfikacji tresci** - zwracamy to co SAOS API zwraca, bez "ulepszania" / podsumowywania. Modyfikacja = utrata wartosci dowodowej.
+- **Every tool call MUST return `structuredContent.citations`** with: judgment title, canonical URL (SAOS), court, date, case number. This is the product contract.
+- **No caching of client data** - the connector is stateless and does not log queries.
+- **No content modification** - we return exactly what the SAOS API returns, with no "enhancement" / summarization. Modification = loss of evidentiary value.
 
-## Narzedzia MCP (tools contract)
+## MCP tools (tools contract)
 
-| Tool | Parametry kluczowe | Zwraca |
+| Tool | Key parameters | Returns |
 |---|---|---|
-| `search` | `query`, `court_type?`, `date_from?`, `date_to?` | lista orzeczen z metadanymi + citations |
-| `get_judgment` | `judgment_id` | pelny tekst orzeczenia + metadata + citations |
-| `search_by_case` | `case_number` (sygnatura) | wszystkie orzeczenia danej sygnatury |
+| `search` | `query`, `court_type?`, `date_from?`, `date_to?` | list of judgments with metadata + citations |
+| `get_judgment` | `judgment_id` | full judgment text + metadata + citations |
+| `search_by_case` | `case_number` (case signature) | all judgments for a given case number |
 
-Pelny opis schema: `src/index.ts` + dokumentacja MCP w `README.md`.
+Full schema description: `src/index.ts` + MCP documentation in `README.md`.
 
-## Build i test
+## Build and test
 
 ```bash
 npm install        # Node 20+
@@ -37,42 +37,42 @@ npm start          # node dist/index.js (stdio transport)
 npm run dev        # ts-node src/index.ts (development)
 ```
 
-Test reczny przez Inspector MCP:
+Manual test via the MCP Inspector:
 
 ```bash
 npx @modelcontextprotocol/inspector node dist/index.js
 ```
 
-## Zasady kodu
+## Code rules
 
-- **TypeScript strict**. Bez `any` w nowym kodzie.
-- **`@modelcontextprotocol/sdk` ^1.12.0** - SDK MCP, nie zmieniaj wersji bez sprawdzenia kompatybilnosci z Patron i innymi klientami.
-- **Bez polskich znakow w commit messages**.
-- **Bump CHANGELOG.md przy KAZDEJ zmianie kontraktu** narzedzia (SEMVER MAJOR).
-- **Bez node_modules / dist w commitach** (sa w `.gitignore`).
+- **TypeScript strict**. No `any` in new code.
+- **`@modelcontextprotocol/sdk` ^1.12.0** - the MCP SDK; do not change the version without checking compatibility with Patron and other clients.
+- **No Polish characters in commit messages**.
+- **Bump CHANGELOG.md on EVERY tool contract change** (SEMVER MAJOR).
+- **No node_modules / dist in commits** (they are in `.gitignore`).
 
-## Czego NIE robic (twarde reguly)
+## What NOT to do (hard rules)
 
-- **NIE dodawaj tools ktore wysylaja dane uzytkownika do zewnetrznych API** poza SAOS. Konektor ma byc **single-source** (SAOS), kazdy dodatkowy source = osobne repo MCP.
-- **NIE modyfikuj zwracanego tekstu orzeczenia** - to dane primary, integralne.
-- **NIE cachuj zapytan z PII** - konektor jest stateless. Cache na poziomie klienta (Patron) z polityka retencji.
-- **NIE breaking-changes bez bumpu MAJOR** w `package.json` i CHANGELOG.
+- **Do NOT add tools that send user data to external APIs** other than SAOS. The connector must be **single-source** (SAOS); every additional source = a separate MCP repo.
+- **Do NOT modify the returned judgment text** - it is primary, integral data.
+- **Do NOT cache queries containing PII** - the connector is stateless. Caching happens at the client level (Patron) with a retention policy.
+- **No breaking changes without a MAJOR bump** in `package.json` and CHANGELOG.
 
-## Zrodla prawdy (kolejnosc czytania)
+## Sources of truth (reading order)
 
-1. [README.md](./README.md) - instalacja i przyklady wywolan
-2. [CHANGELOG.md](./CHANGELOG.md) - historia wersji
-3. `src/index.ts` - implementacja tools + schema
-4. [API SAOS dokumentacja](https://saos.org.pl/help/index.php/dokumentacja-api) - upstream contract
+1. [README.md](./README.md) - installation and call examples
+2. [CHANGELOG.md](./CHANGELOG.md) - version history
+3. `src/index.ts` - tools implementation + schema
+4. [SAOS API documentation](https://saos.org.pl/help/index.php/dokumentacja-api) - upstream contract
 
-## Kompatybilnosc agentow
+## Agent compatibility
 
-Standard [AGENTS.md](https://agents.md). Dla Claude Code dodatkowo plik [CLAUDE.md](./CLAUDE.md).
+The [AGENTS.md](https://agents.md) standard. For Claude Code there is an additional [CLAUDE.md](./CLAUDE.md) file.
 
-Konektor jest agent-agnostic (MCP) - wpina sie w Claude Code, Patron, Cursor, Codex, Continue, Cline i kazdy klient zgodny z protokolem.
+The connector is agent-agnostic (MCP) - it plugs into Claude Code, Patron, Cursor, Codex, Continue, Cline, and any protocol-compliant client.
 
-## Licencja
+## License
 
-**MIT** - patrz [LICENSE](./LICENSE). Mozesz wpinac w dowolny produkt komercyjny / open source bez restrykcji.
+**MIT** - see [LICENSE](./LICENSE). You may embed it in any commercial / open source product without restrictions.
 
-Cytowanie: *MateMatic Solutions (2026), mcp-saos - MCP server dla polskiego orzecznictwa SAOS, https://github.com/matematicsolutions/mcp-saos, MIT.*
+Citation: *MateMatic Solutions (2026), mcp-saos - MCP server for Polish SAOS case law, https://github.com/matematicsolutions/mcp-saos, MIT.*

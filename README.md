@@ -1,56 +1,56 @@
 # mcp-saos
 
-## Instalacja (jedna komenda)
+## Installation (one command)
 
-Opublikowany na npm + MCP Registry (`io.github.matematicsolutions/mcp-saos`). Uruchomienie bez klonowania:
+Published on npm + the MCP Registry (`io.github.matematicsolutions/mcp-saos`). Run without cloning:
 
 ```bash
 npx -y @matematicsolutions/mcp-saos
 ```
 
-Konfiguracja klienta MCP (stdio):
+MCP client configuration (stdio):
 
 ```json
 { "mcpServers": { "mcp-saos": { "command": "npx", "args": ["-y", "@matematicsolutions/mcp-saos"] } } }
 ```
 
-(Budowanie ze źródeł — niżej.)
+(Building from source - below.)
 
 [![MCP](https://img.shields.io/badge/MCP-Server-blue)](https://modelcontextprotocol.io) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE) [![Node](https://img.shields.io/badge/Node-18%2B-brightgreen)](https://nodejs.org)
 
-Serwer MCP (Model Context Protocol) dla polskiego orzecznictwa - konektor do
-SAOS (System Analizy Orzeczen Sadowych, Fundacja ePanstwo).
+An MCP (Model Context Protocol) server for Polish case law - a connector to
+SAOS (System Analizy Orzeczen Sadowych - the courts' public case-law database, run by Fundacja ePanstwo).
 
-Czesc projektu **MateMatic "polski legal AI"**. Dziala jako osobny proces
-komunikujacy sie przez stdio; szablon czatu (fork mike) wola go przez protokol MCP.
+Part of the MateMatic "Polish legal AI" project. It runs as a separate process
+communicating over stdio; the chat template (a fork of mike) calls it through the MCP protocol.
 
-## Czym jest SAOS
+## What SAOS is
 
-Otwarta baza orzeczen sadow polskich. Publiczne REST API, bez klucza.
+An open database of Polish court judgments. Public REST API, no key required.
 
-**Wazne ograniczenie:** SAOS to archiwum historyczne - ingestja danych
-zatrzymala sie ok. 2016-2018. Nie nadaje sie do biezacego orzecznictwa.
-Do spraw aktualnych: sn.pl, orzeczenia.ms.gov.pl, trybunal.gov.pl.
+**Important limitation:** SAOS is a historical archive - data ingestion
+stopped around 2016-2018. It is not suitable for current case law.
+For recent matters, use: sn.pl, orzeczenia.ms.gov.pl, trybunal.gov.pl.
 
-Baza pokrywa: sady powszechne (COMMON), Sad Najwyzszy (SUPREME),
-Trybunal Konstytucyjny (CONSTITUTIONAL_TRIBUNAL), KIO (NATIONAL_APPEAL_CHAMBER).
-Sady administracyjne (WSA/NSA) - brak danych w SAOS.
+The database covers: common courts (COMMON), the Sad Najwyzszy (Supreme Court, SUPREME),
+the Trybunal Konstytucyjny (Constitutional Tribunal, CONSTITUTIONAL_TRIBUNAL), the KIO (National Appeal Chamber, NATIONAL_APPEAL_CHAMBER).
+Administrative courts (WSA/NSA) - no data in SAOS.
 
-## Narzedzia MCP
+## MCP tools
 
-| Narzedzie | Opis |
+| Tool | Description |
 |---|---|
-| `search` | Wyszukiwanie pelnotekstowe i filtrowane (sad, sedzia, podstawa prawna, daty) |
-| `get_judgment` | Pelne orzeczenie po ID z SAOS |
-| `search_by_case` | Skrot: szukaj po sygnaturze akt (np. "I ACa 772/13") |
+| `search` | Full-text and filtered search (court, judge, legal basis, dates) |
+| `get_judgment` | Full judgment by ID from SAOS |
+| `search_by_case` | Shortcut: search by case number (e.g. "I ACa 772/13") |
 
-## Wymagania
+## Requirements
 
 - Node.js >= 18
 - npm >= 9
-- Dostep do internetu (live API saos.org.pl)
+- Internet access (live API saos.org.pl)
 
-## Instalacja i budowanie
+## Installation and build
 
 ```bash
 git clone https://github.com/matematicsolutions/mcp-saos
@@ -59,31 +59,31 @@ npm install
 npm run build
 ```
 
-Po `npm run build` plik startowy to `dist/index.js`.
+After `npm run build`, the entry point is `dist/index.js`.
 
-## Uruchomienie standalone (test)
+## Standalone run (test)
 
 ```bash
 node dist/index.js
-# serwer nasłuchuje na stdin/stdout, logi diagnostyczne na stderr
+# the server listens on stdin/stdout, diagnostic logs go to stderr
 ```
 
-## Podpiecie do szablonu czatu (fork mike) - mcp-servers.json
+## Wiring into the chat template (fork of mike) - mcp-servers.json
 
-Dodaj wpis do konfiguracji MCP swojego klienta (np. `mcp-servers.json`):
+Add an entry to your client's MCP configuration (e.g. `mcp-servers.json`):
 
 ```json
 {
   "name": "saos",
   "transport": "stdio",
   "command": "node",
-  "args": ["C:/Users/<TWOJ-UZYTKOWNIK>/mcp-saos/dist/index.js"],
+  "args": ["C:/Users/<YOUR-USER>/mcp-saos/dist/index.js"],
   "enabled": true
 }
 ```
 
-Podaj bezwzgledna sciezke do `dist/index.js`. Na Windows uzyj slashow `/`
-lub podwojnych ukosnikow `\\`.
+Provide the absolute path to `dist/index.js`. On Windows use forward slashes `/`
+or double backslashes `\\`.
 
 ## Smoke test
 
@@ -92,10 +92,10 @@ npm run build
 node test/smoke.mjs
 ```
 
-Smoke test sprawdza: `tools/list` (3 narzedzia) i `tools/call search`
-na zywym API SAOS z fraz "ochrona danych", sad SUPREME.
+The smoke test checks: `tools/list` (3 tools) and `tools/call search`
+against the live SAOS API with the phrase "ochrona danych", court SUPREME.
 
-## Architektura
+## Architecture
 
 ```
 stdin  -->  MCP JSON-RPC (stdio transport)  -->  src/index.ts
@@ -107,23 +107,23 @@ stdin  -->  MCP JSON-RPC (stdio transport)  -->  src/index.ts
 stdout <--  formatted text responses  <--
 ```
 
-Brak zewnetrznych zaleznoscijsonow - HTTP przez wbudowany `node:https`.
-Jedyna zaleznosc produkcyjna: `@modelcontextprotocol/sdk`.
+No external dependencies for HTTP/JSON - requests go through the built-in `node:https`.
+The only production dependency: `@modelcontextprotocol/sdk`.
 
-## Ograniczenia i znane pulapki
+## Limitations and known pitfalls
 
-- `pageSize` ma twardy dolny limit 10 (SAOS zwraca HTTP 400 dla mniej) -
-  serwer automatycznie wymusza minimum 10.
-- `courtType=ADMINISTRATIVE` zwraca puste wyniki - SAOS nie indeksuje WSA/NSA.
-- Daty w bazie moga zawierac artefakty OCR (np. "3013-12-04") - sygnatura
-  akt jest pewniejsza niz pole `judgmentDate`.
-- Baza jest historyczna (~do 2016-2018) - serwer zawsze informuje o tym
-  w kazdej odpowiedzi narzedzia.
+- `pageSize` has a hard lower limit of 10 (SAOS returns HTTP 400 for less) -
+  the server automatically enforces a minimum of 10.
+- `courtType=ADMINISTRATIVE` returns empty results - SAOS does not index WSA/NSA.
+- Dates in the database may contain OCR artifacts (e.g. "3013-12-04") - the case
+  number is more reliable than the `judgmentDate` field.
+- The database is historical (~up to 2016-2018) - the server always states this
+  in every tool response.
 
-## Licencja
+## License
 
-MIT - szczegoly w pliku LICENSE.
-Dane orzeczen: Fundacja ePanstwo, otwarta licencja (API publiczne bez ograniczen uzycia).
+MIT - see the LICENSE file for details.
+Judgment data: Fundacja ePanstwo, open license (public API with no usage restrictions).
 
 ## Part of the MateMatic legal stack
 
@@ -131,11 +131,11 @@ This server is one of five MCP connectors covering Polish jurisdiction +
 EU law, used by [Patron](https://github.com/matematicsolutions/patron)
 (AGPL-3.0) and any other MCP-aware legal AI agent.
 
-- **mcp-saos** (this repo) — common courts, Supreme Court, Constitutional Tribunal, KIO
-- [mcp-nsa](https://github.com/matematicsolutions/mcp-nsa) — NSA + 16 WSA administrative courts
-- [mcp-isap](https://github.com/matematicsolutions/mcp-isap) — Polish legislation (Dz.U. + M.P.)
-- [mcp-krs](https://github.com/matematicsolutions/mcp-krs) — Polish company registry (KRS)
-- [mcp-eu-sparql](https://github.com/matematicsolutions/mcp-eu-sparql) — EU law + CJEU (EUR-Lex)
+- **mcp-saos** (this repo) - common courts, Supreme Court, Constitutional Tribunal, KIO
+- [mcp-nsa](https://github.com/matematicsolutions/mcp-nsa) - NSA + 16 WSA administrative courts
+- [mcp-isap](https://github.com/matematicsolutions/mcp-isap) - Polish legislation (Dz.U. + M.P.)
+- [mcp-krs](https://github.com/matematicsolutions/mcp-krs) - Polish company registry (KRS)
+- [mcp-eu-sparql](https://github.com/matematicsolutions/mcp-eu-sparql) - EU law + CJEU (EUR-Lex)
 
 
 All five MCP servers share the same `structuredContent.citations`
