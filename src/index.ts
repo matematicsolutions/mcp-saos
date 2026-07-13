@@ -11,6 +11,8 @@
  *   search          - full-text / filtered search over /api/search/judgments
  *   get_judgment    - single judgment by id via /api/judgments/{id}
  *   search_by_case  - shortcut: search by case number (sygnatura akt)
+ *   saos_cite_check - citator "is the judgment alive": later citing judgments
+ *                     + phrase scan for line-breaking language (see cite-check.ts)
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -22,6 +24,15 @@ import {
 import https from "node:https";
 import http from "node:http";
 import { URL } from "node:url";
+import {
+  parseCaseNumber,
+  buildCaseNumberRegex,
+  scanWindows,
+  computeVerdict,
+  VERDICT_TEXT,
+  CITE_CHECK_DISCLAIMER,
+  type ScanHit,
+} from "./cite-check.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -387,6 +398,254 @@ function buildJudgmentCitation(raw: unknown): SaosCitation | null {
 }
 
 // ---------------------------------------------------------------------------
+// Citator - orchestration for saos_cite_check (pure logic in cite-check.ts)
+// ---------------------------------------------------------------------------
+
+const CITE_MAX_SCAN_DEFAULT = 8;
+const CITE_MAX_SCAN_CAP = 20;
+const CITE_FETCH_BATCH = 4;
+const CITE_DISPLAY_LIMIT = 20;
+
+interface CiteHitOut {
+  citing_case_number: string;
+  citing_saos_id?: number;
+  citing_date?: string;
+  citing_court?: string;
+  severity: string;
+  label: string;
+  phrase: string;
+  fragment: string;
+  source: "deep_scan" | "search_snippet";
+}
+
+function itemCaseNumber(it: JudgmentItem): string {
+  return it.courtCases?.[0]?.caseNumber ?? "";
+}
+
+function itemCourtName(it: JudgmentItem): string {
+  return it.division?.court?.name ?? it.division?.name ?? it.courtType ?? "";
+}
+
+function isValidDate(d: string | undefined): d is string {
+  return typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d);
+}
+
+/** Exact-match test: does this item's case number equal the target signature? */
+function matchesCaseNumber(it: JudgmentItem, caseRe: RegExp): boolean {
+  const cn = itemCaseNumber(it);
+  if (!cn) return false;
+  caseRe.lastIndex = 0;
+  const m = caseRe.exec(cn);
+  // Full-string match (allowing surrounding whitespace only)
+  return m !== null && cn.replace(m[0], "").trim() === "";
+}
+
+async function runCiteCheck(a: Record<string, unknown>) {
+  const rawInput = String(a.caseNumber ?? "");
+  const caseNo = parseCaseNumber(rawInput);
+  if (!caseNo) {
+    return errorResult(
+      `Nie udalo sie wyodrebnic sygnatury akt z '${rawInput}'. ` +
+        "Podaj sygnature w formie np. 'III CZP 6/21', 'I ACa 772/13', 'K 7/94'.",
+      "missing_arg"
+    );
+  }
+
+  const courtType = a.courtType ? String(a.courtType) : undefined;
+  if (courtType && !VALID_COURT_TYPES.has(courtType)) {
+    return errorResult(
+      `courtType '${courtType}' niedozwolony. Uzyj: ${[...VALID_COURT_TYPES].join(", ")}.`,
+      "invalid_court_type"
+    );
+  }
+
+  const deepScan = a.deepScan === undefined ? true : Boolean(a.deepScan);
+  const maxScan = Math.min(
+    CITE_MAX_SCAN_CAP,
+    Math.max(1, typeof a.maxScan === "number" ? a.maxScan : CITE_MAX_SCAN_DEFAULT)
+  );
+
+  const caseRe = buildCaseNumberRegex(caseNo);
+
+  // 1. Locate the target judgment (for its date). Prefer SUPREME on ambiguity -
+  //    identical signatures repeat across common courts.
+  const targetRaw = (await saosSearch({
+    caseNumber: caseNo,
+    courtType,
+    pageSize: 20,
+  })) as SearchResponse;
+  const targetPool = (targetRaw.items ?? []).filter((it) => matchesCaseNumber(it, caseRe));
+  const courtRank = (it: JudgmentItem): number => {
+    if (it.courtType === "SUPREME") return 0;
+    if (it.courtType === "CONSTITUTIONAL_TRIBUNAL") return 1;
+    return 2;
+  };
+  const target =
+    [...targetPool].sort(
+      (x, y) => courtRank(x) - courtRank(y) || (x.judgmentDate ?? "").localeCompare(y.judgmentDate ?? "")
+    )[0] ?? null;
+  const distinctCourts = new Set(targetPool.map((it) => itemCourtName(it))).size;
+  const targetDate = target && isValidDate(target.judgmentDate) ? target.judgmentDate : null;
+
+  // 2. Later judgments citing the signature - quoted full-text phrase search.
+  const citingRaw = (await saosSearch({
+    all: `"${caseNo}"`,
+    pageSize: 100,
+  })) as SearchResponse;
+  const totalCitingRaw = citingRaw.info?.totalResults ?? 0;
+
+  const citing = (citingRaw.items ?? [])
+    .filter((it) => it.id !== undefined)
+    .filter((it) => it.id !== target?.id)
+    .filter((it) => !matchesCaseNumber(it, caseRe)) // exclude the case itself
+    .filter((it) => (targetDate ? isValidDate(it.judgmentDate) && it.judgmentDate > targetDate : true))
+    .sort((x, y) => (y.judgmentDate ?? "").localeCompare(x.judgmentDate ?? ""));
+
+  // 3. Cheap pre-scan: search snippets already contain text around the match.
+  //    One hit per (judgment, phrase label); a deep_scan hit replaces the
+  //    snippet-based one for the same key (fuller fragment context).
+  const hitMap = new Map<string, CiteHitOut>();
+  const addHits = (it: JudgmentItem, scanned: ScanHit[], source: CiteHitOut["source"]) => {
+    for (const h of scanned) {
+      const key = `${it.id}:${h.label}`;
+      const existing = hitMap.get(key);
+      if (existing && !(existing.source === "search_snippet" && source === "deep_scan")) continue;
+      hitMap.set(key, {
+        citing_case_number: itemCaseNumber(it) || `SAOS #${it.id}`,
+        citing_saos_id: it.id,
+        citing_date: it.judgmentDate,
+        citing_court: itemCourtName(it),
+        severity: h.severity,
+        label: h.label,
+        phrase: h.phrase,
+        fragment: h.fragment,
+        source,
+      });
+    }
+  };
+
+  for (const it of citing) {
+    if (it.textContent) addHits(it, scanWindows(it.textContent, caseNo), "search_snippet");
+  }
+
+  // 4. Deep scan: fetch full texts of the most decisive citing judgments
+  //    (Supreme Court and resolutions first, then newest), in small batches.
+  let scannedDeep = 0;
+  if (deepScan && citing.length > 0) {
+    const prioritized = [...citing]
+      .sort((x, y) => {
+        const xs = x.courtType === "SUPREME" ? 0 : 1;
+        const ys = y.courtType === "SUPREME" ? 0 : 1;
+        if (xs !== ys) return xs - ys;
+        const xr = x.judgmentType === "RESOLUTION" ? 0 : 1;
+        const yr = y.judgmentType === "RESOLUTION" ? 0 : 1;
+        if (xr !== yr) return xr - yr;
+        return (y.judgmentDate ?? "").localeCompare(x.judgmentDate ?? "");
+      })
+      .slice(0, maxScan);
+
+    for (let i = 0; i < prioritized.length; i += CITE_FETCH_BATCH) {
+      const batch = prioritized.slice(i, i + CITE_FETCH_BATCH);
+      const details = await Promise.all(
+        batch.map(async (it) => {
+          try {
+            return (await saosGetJudgment(it.id as number)) as JudgmentData;
+          } catch {
+            return null; // single fetch failure must not sink the whole check
+          }
+        })
+      );
+      details.forEach((d, idx) => {
+        if (!d?.textContent) return;
+        scannedDeep++;
+        addHits(batch[idx], scanWindows(d.textContent, caseNo), "deep_scan");
+      });
+    }
+  }
+
+  // 5. Verdict + output.
+  const hits = [...hitMap.values()];
+  const verdict = computeVerdict(citing.length, hits);
+  const strongHits = hits.filter((h) => h.severity === "strong");
+  const cautionHits = hits.filter((h) => h.severity === "caution");
+
+  const lines: string[] = [`=== CITATOR SAOS: ${caseNo} ===`, ""];
+  if (target) {
+    lines.push(
+      `Orzeczenie badane: ${itemCaseNumber(target)} | ${itemCourtName(target)} | ` +
+        `${target.judgmentDate ?? "data nieznana"} | https://www.saos.org.pl/judgments/${target.id}`
+    );
+    if (distinctCourts > 1) {
+      lines.push(
+        `Uwaga: sygnatura '${caseNo}' wystepuje w ${distinctCourts} roznych sadach - ` +
+          "wybrano orzeczenie wg priorytetu SN > TK > pozostale. Doprecyzuj courtType, jesli chodzi o inny sad."
+      );
+    }
+  } else {
+    lines.push(
+      `Orzeczenie badane: '${caseNo}' NIE znalezione w SAOS - filtr 'pozniejsze niz badane' niedostepny, ` +
+        "wyniki obejmuja wszystkie orzeczenia przywolujace te sygnature."
+    );
+  }
+  lines.push("");
+  lines.push(`WERDYKT [${verdict}]: ${VERDICT_TEXT[verdict]}`);
+  lines.push("");
+  lines.push(
+    `Cytujace orzeczenia${targetDate ? " (pozniejsze niz " + targetDate + ")" : ""}: ` +
+      `${citing.length} na tej stronie (lacznie w SAOS dla frazy: ${totalCitingRaw}), ` +
+      `skan pelnych tekstow: ${scannedDeep}.`
+  );
+
+  if (hits.length > 0) {
+    lines.push("");
+    lines.push(`Trafienia fraz (${strongHits.length} strong, ${cautionHits.length} caution):`);
+    for (const h of [...strongHits, ...cautionHits].slice(0, 15)) {
+      lines.push(
+        `- [${h.severity}/${h.label}] ${h.citing_case_number} (${h.citing_court}, ${h.citing_date ?? "?"})`
+      );
+      lines.push(`  fraza: "${h.phrase}"`);
+      lines.push(`  fragment: "...${h.fragment}..."`);
+    }
+  }
+
+  if (citing.length > 0) {
+    lines.push("");
+    lines.push(`Najnowsze cytujace (max ${CITE_DISPLAY_LIMIT}):`);
+    for (const it of citing.slice(0, CITE_DISPLAY_LIMIT)) {
+      lines.push(
+        `- ${itemCaseNumber(it) || "brak_sygnatury"} | ${it.judgmentDate ?? "?"} | ` +
+          `${itemCourtName(it)} | https://www.saos.org.pl/judgments/${it.id}`
+      );
+    }
+  }
+
+  lines.push("");
+  lines.push(CITE_CHECK_DISCLAIMER);
+
+  return {
+    content: [{ type: "text" as const, text: lines.join("\n") }],
+    structuredContent: {
+      verdict,
+      target: target
+        ? {
+            case_number: itemCaseNumber(target),
+            court: itemCourtName(target),
+            judgment_date: target.judgmentDate ?? null,
+            saos_id: target.id,
+            url: `https://www.saos.org.pl/judgments/${target.id}`,
+          }
+        : null,
+      total_citing_found: citing.length,
+      total_citing_in_saos: totalCitingRaw,
+      scanned_deep: scannedDeep,
+      hits,
+      disclaimer: CITE_CHECK_DISCLAIMER,
+      citations: buildSearchCitations({ items: citing.slice(0, CITE_DISPLAY_LIMIT) }),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Instructions (procedural orchestration) - wstrzykiwane przez Server do
 // system promptu klienta MCP. LLM widzi PRZED pierwszym tool call.
 // Drift test (test/drift.mjs) failuje jesli tool wymieniony nie jest w
@@ -402,6 +661,9 @@ const INSTRUCTIONS = `Ten serwer MCP udostepnia orzeczenia polskich sadow z bazy
 1. \`search_by_case\` - jesli uzytkownik podal sygnature akt (np. "I ACa 772/13", "IV CSK 123/15") - to skrot, najszybciej.
 2. \`search\` - szerokie szukanie po tresci, podstawie prawnej, sedzim, dacie, typie sadu. Zwraca paginowane wyniki (default 10/strona, max 100).
 3. \`get_judgment\` - pelne orzeczenie po ID numerycznym z wynikow search. Zwraca metadata + pierwsze 2000 znakow tresci.
+
+### Citator - czy wyrok zyje
+4. \`saos_cite_check\` - podaj sygnature, dostaniesz: (a) pozniejsze orzeczenia cytujace ja (pelnotekstowo), (b) skan uzasadnien pod frazy przelamania linii orzeczniczej W OKNIE wokol sygnatury, (c) werdykt: \`przelamanie_wykryte\` / \`uchwala_skladu_powiekszonego\` / \`nadal_cytowany\` / \`brak_cytowan_w_saos\`. Uzywaj PRZED zacytowaniem orzeczenia jako aktualnego. Werdykt to heurystyka - przy \`przelamanie_wykryte\` ZAWSZE zweryfikuj pelny tekst trafienia przez \`get_judgment\`. Brak trafien NIE potwierdza aktualnosci (pokrycie SAOS nierowne).
 
 ## Twarde ograniczenia
 
@@ -544,6 +806,53 @@ const TOOLS = [
       required: ["caseNumber"],
     },
   },
+  {
+    name: "saos_cite_check",
+    annotations: READ_ONLY_ANNOTATIONS,
+    description:
+      "Citator 'czy wyrok zyje': dla podanej sygnatury szuka POZNIEJSZYCH orzeczen, " +
+      "ktore ja cytuja (pelnotekstowo w SAOS), i skanuje ich uzasadnienia pod frazy " +
+      "przelamania linii orzeczniczej (np. 'odstepuje od pogladu wyrazonego', " +
+      "'nie podziela pogladu', 'traci moc uchwala', 'uchwala skladu siedmiu sedziow') " +
+      "w oknie ~500 znakow wokol wystapienia sygnatury. " +
+      "Werdykt: przelamanie_wykryte / uchwala_skladu_powiekszonego / nadal_cytowany / " +
+      "brak_cytowan_w_saos. To heurystyka - kazde trafienie ma fragment tekstu do " +
+      "recznej weryfikacji, a brak trafien NIE potwierdza aktualnosci orzeczenia. " +
+      "Bledy: `missing_arg` (nieczytelna sygnatura), `invalid_court_type`, `upstream_error`.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        caseNumber: {
+          type: "string",
+          description:
+            "Sygnatura akt orzeczenia do sprawdzenia, np. 'III CZP 6/21'. " +
+            "Moze byc czescia zdania ('uchwala SN z 7.05.2021 r., III CZP 6/21').",
+        },
+        courtType: {
+          type: "string",
+          enum: ["COMMON", "SUPREME", "CONSTITUTIONAL_TRIBUNAL", "NATIONAL_APPEAL_CHAMBER"],
+          description:
+            "Opcjonalnie: typ sadu orzeczenia badanego - sygnatury powtarzaja sie " +
+            "miedzy sadami, to doprecyzowuje ktore orzeczenie sprawdzamy.",
+        },
+        maxScan: {
+          type: "number",
+          description:
+            "Ile cytujacych orzeczen przeskanowac w pelnym tekscie (1-20, domyslnie 8). " +
+            "Priorytet: SN > uchwaly > najnowsze.",
+          minimum: 1,
+          maximum: 20,
+        },
+        deepScan: {
+          type: "boolean",
+          description:
+            "Czy pobierac pelne teksty cytujacych orzeczen (domyslnie true). " +
+            "false = tylko szybki skan snippetow z wyszukiwarki.",
+        },
+      },
+      required: ["caseNumber"],
+    },
+  },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -574,7 +883,7 @@ const VALID_COURT_TYPES = new Set([
 ]);
 
 const server = new Server(
-  { name: "mcp-saos", version: "1.1.2" }, // keep in sync with package.json "version"
+  { name: "mcp-saos", version: "1.2.0" }, // keep in sync with package.json "version"
   { capabilities: { tools: {} }, instructions: INSTRUCTIONS }
 );
 
@@ -648,6 +957,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{ type: "text", text: formatSearchResults(raw) }],
           structuredContent: { citations: buildSearchCitations(raw) },
         };
+      }
+
+      case "saos_cite_check": {
+        if (!a.caseNumber) {
+          return errorResult("parametr 'caseNumber' jest wymagany.", "missing_arg");
+        }
+        return await runCiteCheck(a);
       }
 
       default:

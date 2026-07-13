@@ -97,12 +97,13 @@ async function runSmoke() {
       names.includes("search") &&
       names.includes("get_judgment") &&
       names.includes("search_by_case") &&
-      names.length === 3
+      names.includes("saos_cite_check") &&
+      names.length === 4
     ) {
-      console.log("  PASS: 3 tools present\n");
+      console.log("  PASS: 4 tools present\n");
       passed++;
     } else {
-      console.log(`  FAIL: expected 3 tools, got ${names.length}: ${names.join(", ")}\n`);
+      console.log(`  FAIL: expected 4 tools, got ${names.length}: ${names.join(", ")}\n`);
       failed++;
     }
   } catch (err) {
@@ -198,6 +199,48 @@ async function runSmoke() {
     } else {
       console.log("\n  PASS (no-error response received)\n");
       passed++;
+    }
+  } catch (err) {
+    console.log(`  FAIL: ${err.message}\n`);
+    failed++;
+  }
+
+  // ----- TEST 5: saos_cite_check (live citator) -----
+  // III CZP 6/21 - Supreme Court 7-judge resolution of 2021-05-07, heavily
+  // cited; at least one later judgment (I C 3346/24, SAOS id 543228) expressly
+  // departs from it, so the citator has real signals to find.
+  console.log('TEST 5: tools/call saos_cite_check {caseNumber="III CZP 6/21", maxScan=3}');
+  try {
+    const result = await rpc("tools/call", {
+      name: "saos_cite_check",
+      arguments: { caseNumber: "III CZP 6/21", maxScan: 3 },
+    });
+
+    const text = result?.content?.[0]?.text ?? "";
+    const sc = result?.structuredContent ?? {};
+    console.log("  Response preview (first 800 chars):");
+    console.log("  " + text.slice(0, 800).split("\n").join("\n  "));
+
+    const verdicts = [
+      "przelamanie_wykryte",
+      "uchwala_skladu_powiekszonego",
+      "nadal_cytowany",
+      "brak_cytowan_w_saos",
+    ];
+    const hasVerdict = verdicts.includes(sc.verdict);
+    const hasDisclaimer = text.includes("OGRANICZENIA");
+    const hasCitations = Array.isArray(sc.citations);
+    const hasCiting = (sc.total_citing_found ?? 0) > 0;
+
+    if (!result?.isError && hasVerdict && hasDisclaimer && hasCitations && hasCiting) {
+      console.log(`\n  PASS: verdict=${sc.verdict}, citing=${sc.total_citing_found}, hits=${(sc.hits ?? []).length}\n`);
+      passed++;
+    } else {
+      console.log(
+        `\n  FAIL: isError=${result?.isError}, verdict=${sc.verdict}, ` +
+          `disclaimer=${hasDisclaimer}, citations=${hasCitations}, citing=${sc.total_citing_found}\n`
+      );
+      failed++;
     }
   } catch (err) {
     console.log(`  FAIL: ${err.message}\n`);

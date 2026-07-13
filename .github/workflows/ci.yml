@@ -28,3 +28,6 @@ jobs:
 
       - name: Verify dist artifact
         run: ls -la dist/index.js
+
+      - name: Drift + unit tests (offline)
+        run: npm test

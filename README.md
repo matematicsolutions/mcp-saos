@@ -28,9 +28,10 @@ communicating over stdio; the chat template (a fork of mike) calls it through th
 
 An open database of Polish court judgments. Public REST API, no key required.
 
-**Important limitation:** SAOS is a historical archive - data ingestion
-stopped around 2016-2018. It is not suitable for current case law.
-For recent matters, use: sn.pl, orzeczenia.ms.gov.pl, trybunal.gov.pl.
+**Coverage caveat:** coverage is broad and includes current judgments
+(2024-2026 are well populated), but it is uneven by court type, and some
+Supreme Court resolutions exist only as citations in other judgments.
+Verify anything critical against sn.pl, orzeczenia.ms.gov.pl, trybunal.gov.pl.
 
 The database covers: common courts (COMMON), the Sad Najwyzszy (Supreme Court, SUPREME),
 the Trybunal Konstytucyjny (Constitutional Tribunal, CONSTITUTIONAL_TRIBUNAL), the KIO (National Appeal Chamber, NATIONAL_APPEAL_CHAMBER).
@@ -43,6 +44,28 @@ Administrative courts (WSA/NSA) - no data in SAOS.
 | `search` | Full-text and filtered search (court, judge, legal basis, dates) |
 | `get_judgment` | Full judgment by ID from SAOS |
 | `search_by_case` | Shortcut: search by case number (e.g. "I ACa 772/13") |
+| `saos_cite_check` | Citator: is the judgment still good law? Finds later citing judgments and scans them for overruling language near the signature |
+
+### saos_cite_check - the citator
+
+Give it a case number (a placeholder here; use a real one):
+
+```json
+{ "caseNumber": "III CZP NN/RR" }
+```
+
+It searches SAOS full-text for later judgments citing that signature, scans
+their reasoning for departure phrases ("odstepuje od pogladu wyrazonego",
+"nie podziela pogladu", "traci moc uchwala", "uchwala skladu siedmiu sedziow"
+and others) within ~500 characters of the signature, and returns one of four
+verdicts: `przelamanie_wykryte`, `uchwala_skladu_powiekszonego`,
+`nadal_cytowany`, `brak_cytowan_w_saos`. Each hit includes a +-200 character
+fragment for human verification.
+
+Every phrase on the list was verified against live SAOS data - the evidence
+table, the algorithm and the honest-limits section are in
+[docs/CITE-CHECK.md](./docs/CITE-CHECK.md). The short version: no hits does
+NOT mean the judgment is still good law, and every response says so.
 
 ## Requirements
 
@@ -85,15 +108,17 @@ Add an entry to your client's MCP configuration (e.g. `mcp-servers.json`):
 Provide the absolute path to `dist/index.js`. On Windows use forward slashes `/`
 or double backslashes `\\`.
 
-## Smoke test
+## Tests
 
 ```bash
 npm run build
-node test/smoke.mjs
+npm test            # offline: drift test + unit tests (parser, window scan, phrase patterns)
+node test/smoke.mjs # live: 5 checks against the real SAOS API, including the citator
 ```
 
-The smoke test checks: `tools/list` (3 tools) and `tools/call search`
-against the live SAOS API with the phrase "ochrona danych", court SUPREME.
+The smoke test checks `tools/list` (4 tools), `search`, `search_by_case`,
+a Constitutional Tribunal lookup and `saos_cite_check` on a Supreme Court
+resolution with known later treatment.
 
 ## Architecture
 
@@ -117,8 +142,11 @@ The only production dependency: `@modelcontextprotocol/sdk`.
 - `courtType=ADMINISTRATIVE` returns empty results - SAOS does not index WSA/NSA.
 - Dates in the database may contain OCR artifacts (e.g. "3013-12-04") - the case
   number is more reliable than the `judgmentDate` field.
-- The database is historical (~up to 2016-2018) - the server always states this
+- Coverage is uneven by court type - the server states the relevant caveats
   in every tool response.
+- `saos_cite_check` is a heuristic. It reads the top citing judgments only,
+  its phrase list cannot cover every way a court departs from a line of case
+  law, and no hits does not confirm the judgment is current.
 
 ## License
 
