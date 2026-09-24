@@ -1,0 +1,172 @@
+{
+  "package_version": "1.2.0",
+  "toolset_sha256": "891a516da9e89d3ffb1f655ee7f7796fb55441f246a060e222f78eb10b48b1bd",
+  "tools": {
+    "get_judgment": {
+      "sha256": "5cd47f36923d2462990bcd6bace3f0967595fb3b10a2dcae8c48e9f7b035ba68",
+      "descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "description": "Pobiera pelne orzeczenie z SAOS po jego numerycznym ID. Zwraca metadane (sygnatura, sad, data, sklad, podstawy prawne), streszczenie (jesli dostepne) oraz pierwsze 2000 znakow tresci. ID orzeczenia pochodzi z wynikow narzedzia 'search' lub 'search_by_case'. Bledy: `missing_arg` (brak id), `not_found` (id poza baza), `upstream_error`.",
+        "inputSchema": {
+          "properties": {
+            "id": {
+              "description": "Numeryczne ID orzeczenia w bazie SAOS, np. 352475 lub '31345'.",
+              "type": [
+                "string",
+                "number"
+              ]
+            }
+          },
+          "required": [
+            "id"
+          ],
+          "type": "object"
+        },
+        "name": "get_judgment"
+      }
+    },
+    "saos_cite_check": {
+      "sha256": "dacf27b2997f06b448b675663bdba23e087dd5466650ec7eb4603e14b3431824",
+      "descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "description": "Citator 'czy wyrok zyje': dla podanej sygnatury szuka POZNIEJSZYCH orzeczen, ktore ja cytuja (pelnotekstowo w SAOS), i skanuje ich uzasadnienia pod frazy przelamania linii orzeczniczej (np. 'odstepuje od pogladu wyrazonego', 'nie podziela pogladu', 'traci moc uchwala', 'uchwala skladu siedmiu sedziow') w oknie ~500 znakow wokol wystapienia sygnatury. Werdykt: przelamanie_wykryte / uchwala_skladu_powiekszonego / nadal_cytowany / brak_cytowan_w_saos. To heurystyka - kazde trafienie ma fragment tekstu do recznej weryfikacji, a brak trafien NIE potwierdza aktualnosci orzeczenia. Bledy: `missing_arg` (nieczytelna sygnatura), `invalid_court_type`, `upstream_error`.",
+        "inputSchema": {
+          "properties": {
+            "caseNumber": {
+              "description": "Sygnatura akt orzeczenia do sprawdzenia, np. 'III CZP 6/21'. Moze byc czescia zdania ('uchwala SN z 7.05.2021 r., III CZP 6/21').",
+              "type": "string"
+            },
+            "courtType": {
+              "description": "Opcjonalnie: typ sadu orzeczenia badanego - sygnatury powtarzaja sie miedzy sadami, to doprecyzowuje ktore orzeczenie sprawdzamy.",
+              "enum": [
+                "COMMON",
+                "SUPREME",
+                "CONSTITUTIONAL_TRIBUNAL",
+                "NATIONAL_APPEAL_CHAMBER"
+              ],
+              "type": "string"
+            },
+            "deepScan": {
+              "description": "Czy pobierac pelne teksty cytujacych orzeczen (domyslnie true). false = tylko szybki skan snippetow z wyszukiwarki.",
+              "type": "boolean"
+            },
+            "maxScan": {
+              "description": "Ile cytujacych orzeczen przeskanowac w pelnym tekscie (1-20, domyslnie 8). Priorytet: SN > uchwaly > najnowsze.",
+              "maximum": 20,
+              "minimum": 1,
+              "type": "number"
+            }
+          },
+          "required": [
+            "caseNumber"
+          ],
+          "type": "object"
+        },
+        "name": "saos_cite_check"
+      }
+    },
+    "search": {
+      "sha256": "4489dd6920b5e07347894980550768407a196c7950502ee4cdd1d5bcf19fcad0",
+      "descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "description": "Przeszukuje baze orzeczen sadow polskich w SAOS (System Analizy Orzeczen Sadowych). Pokrycie obejmuje takze orzeczenia biezace (lata 2024-2026 sa dobrze reprezentowane), ale jest nierowne wg typu sadu. Sady administracyjne (WSA/NSA) NIE sa indeksowane. Daty bywaja znieksztalcone przez OCR - weryfikuj sygnature i date w zrodle. Przydatny do: analizy linii orzeczniczej, precedensow, wyszukiwania po tresci / sygnatuze / sedzim / podstawie prawnej. Bledy: `invalid_court_type` (zly enum), `upstream_error` (HTTP/timeout API).",
+        "inputSchema": {
+          "properties": {
+            "all": {
+              "description": "Wyszukiwanie pelnotekstowe - slowo lub fraza w tresci orzeczenia.",
+              "type": "string"
+            },
+            "caseNumber": {
+              "description": "Sygnatura akt, np. 'I ACa 772/13' lub 'IV CSK 123/15'.",
+              "type": "string"
+            },
+            "courtType": {
+              "description": "Typ sadu: COMMON=sady powszechne, SUPREME=Sad Najwyzszy, CONSTITUTIONAL_TRIBUNAL=Trybunal Konstytucyjny, NATIONAL_APPEAL_CHAMBER=Krajowa Izba Odwolawcza (KIO). NIE uzywaj ADMINISTRATIVE - sady admin nie sa w SAOS.",
+              "enum": [
+                "COMMON",
+                "SUPREME",
+                "CONSTITUTIONAL_TRIBUNAL",
+                "NATIONAL_APPEAL_CHAMBER"
+              ],
+              "type": "string"
+            },
+            "dateFrom": {
+              "description": "Data orzeczenia od (format YYYY-MM-DD), np. '2015-01-01'.",
+              "type": "string"
+            },
+            "dateTo": {
+              "description": "Data orzeczenia do (format YYYY-MM-DD), np. '2016-12-31'.",
+              "type": "string"
+            },
+            "judgeName": {
+              "description": "Nazwisko sedziego, np. 'Kowalski'.",
+              "type": "string"
+            },
+            "legalBase": {
+              "description": "Podstawa prawna, np. 'art. 415 kc' lub 'art. 6 RODO'.",
+              "type": "string"
+            },
+            "pageNumber": {
+              "description": "Numer strony (od 0). Do paginacji wynikow.",
+              "minimum": 0,
+              "type": "number"
+            },
+            "pageSize": {
+              "description": "Liczba wynikow na strone (min 10, max 100). Domyslnie 10.",
+              "maximum": 100,
+              "minimum": 10,
+              "type": "number"
+            },
+            "referencedRegulation": {
+              "description": "Przywolany akt prawny, np. 'ustawa o ochronie danych osobowych'.",
+              "type": "string"
+            }
+          },
+          "required": [],
+          "type": "object"
+        },
+        "name": "search"
+      }
+    },
+    "search_by_case": {
+      "sha256": "fde7f1af304c17ed93fcee18d90dd6803eb1fca7e71449cb60ddc088630726b0",
+      "descriptor": {
+        "annotations": {
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": true,
+          "readOnlyHint": true
+        },
+        "description": "Skrot: szuka orzeczenia po sygnaturze akt (np. 'I ACa 772/13', 'IV CSK 123/15', 'KIO/UZP 100/12'). Odpowiednik search z parametrem caseNumber. Jesli sygnatura nie znajdzie sie w SAOS, sprawa moze byc z sadu administracyjnego (WSA/NSA - nieindeksowane) lub jeszcze nieopublikowana w bazie. Bledy: `missing_arg` (brak caseNumber), `upstream_error`.",
+        "inputSchema": {
+          "properties": {
+            "caseNumber": {
+              "description": "Sygnatura akt, np. 'I ACa 772/13'.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "caseNumber"
+          ],
+          "type": "object"
+        },
+        "name": "search_by_case"
+      }
+    }
+  }
+}
