@@ -62,7 +62,11 @@ async function runSmoke() {
     }
   });
 
+  const wywolane = new Set();
+  let zarejestrowane = [];
+
   function rpc(method, params) {
+    if (method === "tools/call") wywolane.add(params.name);
     return new Promise((resolve, reject) => {
       const req = makeRequest(method, params);
       const id = idCounter - 1;
@@ -90,6 +94,7 @@ async function runSmoke() {
     const result = await rpc("tools/list", {});
     const tools = result.tools ?? [];
     const names = tools.map((t) => t.name).sort();
+    zarejestrowane = names;
 
     console.log(`  tools returned: ${names.join(", ")}`);
 
@@ -136,8 +141,8 @@ async function runSmoke() {
     } else if (text.includes("Brak wynikow")) {
       console.log("\n  PARTIAL: API responded but no results (possible empty query range)\n");
       passed++;
-    } else if (text.includes("Blad komunikacji")) {
-      console.log("\n  FAIL: API communication error\n");
+    } else if (result?.isError) {
+      console.log(`\n  FAIL: tool error [${result?.structuredContent?.error_code}]\n`);
       failed++;
     } else {
       console.log("\n  PASS (no-error response received)\n");
@@ -193,8 +198,8 @@ async function runSmoke() {
     } else if (text.includes("Brak wynikow")) {
       console.log("\n  FAIL: SAOS returned no results for CONSTITUTIONAL_TRIBUNAL (expected K 7/94 hit)\n");
       failed++;
-    } else if (text.includes("Blad komunikacji")) {
-      console.log("\n  FAIL: API communication error\n");
+    } else if (result?.isError) {
+      console.log(`\n  FAIL: tool error [${result?.structuredContent?.error_code}]\n`);
       failed++;
     } else {
       console.log("\n  PASS (no-error response received)\n");
@@ -245,6 +250,51 @@ async function runSmoke() {
   } catch (err) {
     console.log(`  FAIL: ${err.message}\n`);
     failed++;
+  }
+
+  // ----- TEST 6: get_judgment (live) + 404 -> not_found -----
+  // SAOS id 543228 = I C 3346/24 (fixture source of cite-check.test.mjs).
+  console.log("TEST 6: tools/call get_judgment {id=543228} + {id=999999999}");
+  try {
+    const ok = await rpc("tools/call", { name: "get_judgment", arguments: { id: 543228 } });
+    const brak = await rpc("tools/call", { name: "get_judgment", arguments: { id: 999999999 } });
+    const p = ok?.structuredContent?.provenance ?? {};
+    const okPass =
+      !ok?.isError &&
+      (ok?.content?.[0]?.text ?? "").includes("3346/24") &&
+      String(p.source).includes("/judgments/543228") &&
+      p.source_produced_at === null &&
+      !Number.isNaN(Date.parse(p.retrieved_at));
+    // Zmierzone 2026-10-13: SAOS daje 404 + JSON; do tej zmiany wychodzilo to jako upstream_error.
+    const brakPass = brak?.isError === true && brak?.structuredContent?.error_code === "not_found";
+    if (okPass && brakPass) {
+      console.log("  PASS: judgment text + provenance; missing id -> not_found\n");
+      passed++;
+    } else {
+      console.log(
+        `  FAIL: okPass=${okPass} (provenance=${JSON.stringify(p)}), ` +
+          `brak=${JSON.stringify(brak?.structuredContent)}\n`
+      );
+      failed++;
+    }
+  } catch (err) {
+    console.log(`  FAIL: ${err.message}\n`);
+    failed++;
+  }
+
+  // ----- TEST 7: pelny mianownik - kazde narzedzie z tools/list mialo przypadek zywy -----
+  // Wzorzec leniwyposel/sejm-mcp #7 (`testy/na-zywo.test.ts:42-47`). Do 2026-10-13
+  // get_judgment nie mial przypadku zywego.
+  console.log("TEST 7: every tool from tools/list was called live");
+  {
+    const brakujace = zarejestrowane.filter((n) => !wywolane.has(n));
+    if (zarejestrowane.length > 0 && brakujace.length === 0) {
+      console.log(`  PASS: ${wywolane.size}/${zarejestrowane.length} tools called live\n`);
+      passed++;
+    } else {
+      console.log(`  FAIL: tools without a live case: ${brakujace.join(", ") || "(empty tools/list)"}\n`);
+      failed++;
+    }
   }
 
   // ----- Summary -----

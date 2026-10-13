@@ -21,9 +21,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import https from "node:https";
-import http from "node:http";
-import { URL } from "node:url";
+import { fetchJson, bladJakoWynik, SaosError } from "./saos-http.js";
 import {
   parseCaseNumber,
   buildCaseNumberRegex,
@@ -31,6 +29,8 @@ import {
   computeVerdict,
   VERDICT_TEXT,
   CITE_CHECK_DISCLAIMER,
+  raportSkanu,
+  zdanieWynikNiepelny,
   type ScanHit,
 } from "./cite-check.js";
 
@@ -38,62 +38,12 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-const SAOS_BASE = "https://www.saos.org.pl/api";
-const USER_AGENT = "MateMatic-MCP-SAOS/1.0 (+https://matematic.co)";
+// SAOS_BASE_URL nadpisuje zrodlo (testy E2E na lokalnej atrapie SAOS; jak SEJM_ELI_BASE_URL).
+const SAOS_BASE = (process.env.SAOS_BASE_URL ?? "https://www.saos.org.pl/api").replace(/\/+$/, "");
 
 // Minimum pageSize enforced by the SAOS API. Smaller values return HTTP 400.
 const PAGE_SIZE_MIN = 10;
 const PAGE_SIZE_DEFAULT = 10;
-
-// ---------------------------------------------------------------------------
-// HTTP helper - fetch JSON from a URL (no external deps)
-// ---------------------------------------------------------------------------
-
-function fetchJson(urlStr: string): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const parsedUrl = new URL(urlStr);
-    const transport = parsedUrl.protocol === "https:" ? https : http;
-
-    const options = {
-      hostname: parsedUrl.hostname,
-      port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
-      path: parsedUrl.pathname + parsedUrl.search,
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept: "application/json",
-      },
-      timeout: 40000,
-    };
-
-    const req = transport.get(options, (res) => {
-      const chunks: Buffer[] = [];
-      res.on("data", (chunk: Buffer) => chunks.push(chunk));
-      res.on("end", () => {
-        const body = Buffer.concat(chunks).toString("utf-8");
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          reject(
-            new Error(
-              `HTTP ${res.statusCode}: ${body.slice(0, 300)}`
-            )
-          );
-          return;
-        }
-        try {
-          resolve(JSON.parse(body));
-        } catch {
-          reject(new Error(`Invalid JSON response from SAOS: ${body.slice(0, 200)}`));
-        }
-      });
-    });
-
-    req.on("timeout", () => {
-      req.destroy();
-      reject(new Error("Request to SAOS API timed out after 40s"));
-    });
-
-    req.on("error", (err: Error) => reject(err));
-  });
-}
 
 // ---------------------------------------------------------------------------
 // HTML stripping helper
@@ -130,7 +80,7 @@ interface SearchParams {
   pageNumber?: number;
 }
 
-async function saosSearch(params: SearchParams): Promise<unknown> {
+async function saosSearch(params: SearchParams, zrodla?: string[]): Promise<unknown> {
   // Enforce minimum pageSize
   const size = Math.max(
     PAGE_SIZE_MIN,
@@ -159,13 +109,42 @@ async function saosSearch(params: SearchParams): Promise<unknown> {
     params.judgmentDateTo ?? new Date().toISOString().slice(0, 10);
 
   const qs = new URLSearchParams(query).toString();
-  return fetchJson(`${SAOS_BASE}/search/judgments?${qs}`);
+  const url = `${SAOS_BASE}/search/judgments?${qs}`;
+  zrodla?.push(url);
+  return fetchJson(url);
 }
 
-async function saosGetJudgment(id: string | number): Promise<unknown> {
-  const data = (await fetchJson(`${SAOS_BASE}/judgments/${id}`)) as Record<string, unknown>;
+async function saosGetJudgment(id: string | number, zrodla?: string[]): Promise<unknown> {
+  const url = `${SAOS_BASE}/judgments/${id}`;
+  zrodla?.push(url);
+  const data = (await fetchJson(url)) as Record<string, unknown>;
   return data["data"] ?? data;
 }
+
+// ---------------------------------------------------------------------------
+// Provenance w kazdym udanym wyniku (wzorzec soba-labs/krs-mcp #1, `src/tools/common.ts:38-51`):
+// zrodlo, czas pobrania, czas wytworzenia (jawne null - SAOS go nie podaje, nie zgadujemy)
+// i co zrobil konektor. Pod warunki ponownego wykorzystania informacji sektora publicznego.
+// ---------------------------------------------------------------------------
+
+function provenance(zrodla: string[], processing: string) {
+  return {
+    source: zrodla.length === 1 ? zrodla[0] : zrodla,
+    retrieved_at: new Date().toISOString(),
+    source_produced_at: null,
+    processing,
+  };
+}
+
+const PROCESSING_SEARCH =
+  "Wyniki wyszukiwania SAOS bez zmian merytorycznych; konektor sformatowal liste, zbudowal " +
+  "citations i domyslnie ustawil gorna granice daty na dzis (daty OCR z przyszlosci).";
+const PROCESSING_JUDGMENT =
+  "Orzeczenie SAOS bez zmian merytorycznych; konektor usunal znaczniki HTML i w podgladzie " +
+  "tekstowym obcial tresc.";
+const PROCESSING_CITE_CHECK =
+  "Konektor wyszukal pozniejsze orzeczenia cytujace sygnature i heurystycznie przeskanowal " +
+  "fragmenty oraz pelne teksty pod frazy przelamania linii; werdykt wylicza konektor, nie sad.";
 
 // ---------------------------------------------------------------------------
 // Response formatters
@@ -469,11 +448,12 @@ async function runCiteCheck(a: Record<string, unknown>) {
 
   // 1. Locate the target judgment (for its date). Prefer SUPREME on ambiguity -
   //    identical signatures repeat across common courts.
+  const zrodla: string[] = [];
   const targetRaw = (await saosSearch({
     caseNumber: caseNo,
     courtType,
     pageSize: 20,
-  })) as SearchResponse;
+  }, zrodla)) as SearchResponse;
   const targetPool = (targetRaw.items ?? []).filter((it) => matchesCaseNumber(it, caseRe));
   const courtRank = (it: JudgmentItem): number => {
     if (it.courtType === "SUPREME") return 0;
@@ -491,7 +471,7 @@ async function runCiteCheck(a: Record<string, unknown>) {
   const citingRaw = (await saosSearch({
     all: `"${caseNo}"`,
     pageSize: 100,
-  })) as SearchResponse;
+  }, zrodla)) as SearchResponse;
   const totalCitingRaw = citingRaw.info?.totalResults ?? 0;
 
   const citing = (citingRaw.items ?? [])
@@ -531,6 +511,9 @@ async function runCiteCheck(a: Record<string, unknown>) {
   // 4. Deep scan: fetch full texts of the most decisive citing judgments
   //    (Supreme Court and resolutions first, then newest), in small batches.
   let scannedDeep = 0;
+  let deepAttempted = 0;
+  let deepNoText = 0;
+  const deepFailures: string[] = [];
   if (deepScan && citing.length > 0) {
     const prioritized = [...citing]
       .sort((x, y) => {
@@ -544,19 +527,27 @@ async function runCiteCheck(a: Record<string, unknown>) {
       })
       .slice(0, maxScan);
 
+    deepAttempted = prioritized.length;
     for (let i = 0; i < prioritized.length; i += CITE_FETCH_BATCH) {
       const batch = prioritized.slice(i, i + CITE_FETCH_BATCH);
       const details = await Promise.all(
         batch.map(async (it) => {
           try {
             return (await saosGetJudgment(it.id as number)) as JudgmentData;
-          } catch {
-            return null; // single fetch failure must not sink the whole check
+          } catch (e) {
+            // single fetch failure must not sink the whole check - but it MUST be counted:
+            // "nie sprawdzono" is not "sprawdzono, brak przelamania" (partial_result below)
+            deepFailures.push(e instanceof SaosError ? e.code : "internal_error");
+            return undefined;
           }
         })
       );
       details.forEach((d, idx) => {
-        if (!d?.textContent) return;
+        if (d === undefined) return; // porazka - juz policzona
+        if (!d?.textContent) {
+          deepNoText++;
+          return;
+        }
         scannedDeep++;
         addHits(batch[idx], scanWindows(d.textContent, caseNo), "deep_scan");
       });
@@ -568,8 +559,15 @@ async function runCiteCheck(a: Record<string, unknown>) {
   const verdict = computeVerdict(citing.length, hits);
   const strongHits = hits.filter((h) => h.severity === "strong");
   const cautionHits = hits.filter((h) => h.severity === "caution");
+  const skan = raportSkanu(deepAttempted, deepFailures, deepNoText);
+  const niepelny = zdanieWynikNiepelny(skan);
 
-  const lines: string[] = [`=== CITATOR SAOS: ${caseNo} ===`, ""];
+  // Zdanie "Wynik niepelny" idzie na SAM POCZATEK - slaby model czyta poczatek odpowiedzi.
+  const lines: string[] = [
+    ...(niepelny ? [niepelny, ""] : []),
+    `=== CITATOR SAOS: ${caseNo} ===`,
+    "",
+  ];
   if (target) {
     lines.push(
       `Orzeczenie badane: ${itemCaseNumber(target)} | ${itemCourtName(target)} | ` +
@@ -593,7 +591,7 @@ async function runCiteCheck(a: Record<string, unknown>) {
   lines.push(
     `Cytujace orzeczenia${targetDate ? " (pozniejsze niz " + targetDate + ")" : ""}: ` +
       `${citing.length} na tej stronie (lacznie w SAOS dla frazy: ${totalCitingRaw}), ` +
-      `skan pelnych tekstow: ${scannedDeep}.`
+      `skan pelnych tekstow: ${scannedDeep} z ${deepAttempted}.`
   );
 
   if (hits.length > 0) {
@@ -625,6 +623,14 @@ async function runCiteCheck(a: Record<string, unknown>) {
   return {
     content: [{ type: "text" as const, text: lines.join("\n") }],
     structuredContent: {
+      status: skan.status,
+      partial_result: skan.partial_result,
+      provenance: provenance(
+        deepAttempted > 0
+          ? [...zrodla, `${SAOS_BASE}/judgments/{id} (pelne teksty: ${deepAttempted})`]
+          : zrodla,
+        PROCESSING_CITE_CHECK
+      ),
       verdict,
       target: target
         ? {
@@ -675,11 +681,17 @@ const INSTRUCTIONS = `Ten serwer MCP udostepnia orzeczenia polskich sadow z bazy
 
 ## Iteracja po bledach
 
-Tool zwraca \`isError: true\` + tekst z prefixem \`[code]\`. Typowe kody:
+Tool zwraca \`isError: true\` + tekst z prefixem \`[code]\`, a \`structuredContent\` niesie \`error_code\`, \`fault\` (czyja wina: caller / upstream / network / server), \`retryable\` i opcjonalnie \`retry_after_s\`, \`status\`. Branchuj na \`error_code\` i \`retryable\`, nie na tresci zdania. Ponawiaj TYLKO przy \`retryable: true\`, najwyzej raz.
 - \`missing_arg\` - brakujacy wymagany parametr (np. id w get_judgment, caseNumber w search_by_case). Przeczytaj inputSchema.
-- \`not_found\` - orzeczenie/sygnatura nie ma w SAOS. Sprobuj szerszej daty / innej sygnatury, lub czy to nie WSA/NSA (osobny konektor).
-- \`upstream_error\` - blad komunikacji z API SAOS (HTTP 5xx, timeout 40s). Retry raz przed surface do uzytkownika.
 - \`invalid_court_type\` - klient podal \`ADMINISTRATIVE\` lub inny niedozwolony typ. Dozwolone: COMMON, SUPREME, CONSTITUTIONAL_TRIBUNAL, NATIONAL_APPEAL_CHAMBER.
+- \`not_found\` - orzeczenie/sygnatura nie ma w SAOS (takze 404 zrodla). Sprobuj szerszej daty / innej sygnatury, lub czy to nie WSA/NSA (osobny konektor). Nie ponawiaj.
+- \`upstream_maintenance\` - SAOS ma przerwe techniczna (strona HTML ze statusem 200). Trwa zwykle godziny: powiedz o tym uzytkownikowi zamiast ponawiac. To NIE jest brak orzeczen.
+- \`upstream_unavailable\` - timeout, blad sieci albo 5xx SAOS. Retry raz przed surface do uzytkownika.
+- \`rate_limited\` - SAOS odpowiedzial 429. Odczekaj \`retry_after_s\` i ponow raz.
+- \`forbidden\` - SAOS odmowil dostepu (401/403). Nie ponawiaj, nie obchodz zabezpieczen - zglos czlowiekowi.
+- \`upstream_shape\` - SAOS oddal cos innego niz JSON (strona bledu, captcha) albo uszkodzony JSON. To NIE jest "brak wynikow" - powiedz o awarii zrodla.
+- \`upstream_error\` - inny nieoczekiwany status HTTP SAOS. Powiedz uzytkownikowi o awarii.
+- \`internal_error\` - blad tego serwera MCP (nie SAOS). Nie ponawiaj; zglos blad konektora.
 
 ## Styl odpowiedzi
 
@@ -861,16 +873,24 @@ const TOOLS = [
 
 // Strukturalne kody bledow - drift test asercja ze kazdy tu uzyty jest
 // udokumentowany w INSTRUCTIONS i kazdy w errorResult() istnieje w typie.
+// Kody bledow zrodla rodza sie w src/saos-http.ts (KODY) i musza byc wymienione tutaj -
+// drift test pilnuje obu plikow w obie strony.
 type ErrorCode =
   | "missing_arg"
+  | "invalid_court_type"
   | "not_found"
+  | "rate_limited"
+  | "forbidden"
+  | "upstream_unavailable"
+  | "upstream_maintenance"
+  | "upstream_shape"
   | "upstream_error"
-  | "invalid_court_type";
+  | "internal_error";
 
 function errorResult(text: string, code: ErrorCode) {
   return {
     content: [{ type: "text" as const, text: `[${code}] ${text}` }],
-    structuredContent: { error_code: code },
+    structuredContent: { error_code: code, fault: "caller", retryable: false },
     isError: true,
   };
 }
@@ -883,7 +903,7 @@ const VALID_COURT_TYPES = new Set([
 ]);
 
 const server = new Server(
-  { name: "mcp-saos", version: "1.2.0" }, // keep in sync with package.json "version"
+  { name: "mcp-saos", version: "1.3.0" }, // keep in sync with package.json "version"
   { capabilities: { tools: {} }, instructions: INSTRUCTIONS }
 );
 
@@ -909,6 +929,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             "invalid_court_type"
           );
         }
+        const zrodla: string[] = [];
         const raw = await saosSearch({
           all: a.all as string | undefined,
           caseNumber: a.caseNumber as string | undefined,
@@ -920,10 +941,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           judgmentDateTo: a.dateTo as string | undefined,
           pageSize: a.pageSize as number | undefined,
           pageNumber: a.pageNumber as number | undefined,
-        });
+        }, zrodla);
         return {
           content: [{ type: "text", text: formatSearchResults(raw) }],
-          structuredContent: { citations: buildSearchCitations(raw) },
+          structuredContent: {
+            citations: buildSearchCitations(raw),
+            provenance: provenance(zrodla, PROCESSING_SEARCH),
+          },
         };
       }
 
@@ -931,7 +955,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!a.id) {
           return errorResult("parametr 'id' jest wymagany.", "missing_arg");
         }
-        const raw = await saosGetJudgment(a.id as string | number);
+        const zrodla: string[] = [];
+        const raw = await saosGetJudgment(a.id as string | number, zrodla);
         if (!raw || (typeof raw === "object" && Object.keys(raw).length === 0)) {
           return errorResult(
             `Orzeczenie ID ${a.id} nie znalezione w SAOS. Sprawdz ID przez 'search' / 'search_by_case' lub czy nie jest to sad administracyjny (WSA/NSA - uzyj mcp-nsa).`,
@@ -941,7 +966,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const citation = buildJudgmentCitation(raw);
         return {
           content: [{ type: "text", text: formatJudgment(raw) }],
-          structuredContent: { citations: citation ? [citation] : [] },
+          structuredContent: {
+            citations: citation ? [citation] : [],
+            provenance: provenance(zrodla, PROCESSING_JUDGMENT),
+          },
         };
       }
 
@@ -949,13 +977,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!a.caseNumber) {
           return errorResult("parametr 'caseNumber' jest wymagany.", "missing_arg");
         }
+        const zrodla: string[] = [];
         const raw = await saosSearch({
           caseNumber: a.caseNumber as string,
           pageSize: PAGE_SIZE_DEFAULT,
-        });
+        }, zrodla);
         return {
           content: [{ type: "text", text: formatSearchResults(raw) }],
-          structuredContent: { citations: buildSearchCitations(raw) },
+          structuredContent: {
+            citations: buildSearchCitations(raw),
+            provenance: provenance(zrodla, PROCESSING_SEARCH),
+          },
         };
       }
 
@@ -970,11 +1002,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return errorResult(`Nieznane narzedzie: ${name}`, "missing_arg");
     }
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return errorResult(
-      `Blad komunikacji z API SAOS: ${msg}. Sprawdz polaczenie lub sprobuj ponownie.`,
-      "upstream_error"
-    );
+    // SaosError niesie kod z katalogu (przerwa techniczna, 404, 429, ...); kazdy inny
+    // wyjatek to `internal_error` z wina tego serwera - nie "blad komunikacji, ponow".
+    return bladJakoWynik(err);
   }
 });
 

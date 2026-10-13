@@ -332,3 +332,75 @@ export const CITE_CHECK_DISCLAIMER =
   "slowami albo zasygnalizowac fraze dotyczaca innego watku. Przed powolaniem sie na " +
   "orzeczenie zweryfikuj pelne teksty trafien (get_judgment) i bazy oficjalne (sn.pl, " +
   "orzeczenia.ms.gov.pl).";
+
+// ---------------------------------------------------------------------------
+// Mianownik skanu pelnych tekstow (kanon 6 + wzorzec sejm-mcp #4: partial_result)
+// ---------------------------------------------------------------------------
+
+export interface PartialResult {
+  /** Dlaczego wynik jest niepelny - jedno zdanie. */
+  dlaczego: string;
+  /** Czego brakuje - jedno zdanie z liczbami. */
+  czego_brakuje: string;
+  /** Jak uzupelnic - jedno zdanie, co zrobic. */
+  jak_uzupelnic: string;
+  coverage: { unit: "pelne_teksty"; total: number; usable: number };
+}
+
+export interface RaportSkanu {
+  status: "ok" | "degraded";
+  partial_result: PartialResult | null;
+}
+
+const POWOD: Record<string, string> = {
+  upstream_maintenance: "SAOS ma przerwe techniczna",
+  upstream_unavailable: "SAOS nie odpowiedzial (timeout / 5xx / siec)",
+  rate_limited: "SAOS ograniczyl liczbe zapytan (429)",
+  forbidden: "SAOS odmowil dostepu",
+  not_found: "SAOS nie ma orzeczenia, ktore zwrocilo wyszukiwanie",
+  upstream_shape: "SAOS oddal cos innego niz JSON",
+};
+const PONAWIALNE = new Set(["upstream_unavailable", "rate_limited", "upstream_maintenance"]);
+
+/**
+ * Skan pelnych tekstow z pelnym mianownikiem. Porazka pobrania albo orzeczenie bez tekstu
+ * to "nie sprawdzono", nie "sprawdzono - brak przelamania" (anty-wzorzec PawelHaracz #4).
+ * Wynik czesciowy = `degraded` + trzy zdania: dlaczego / czego brakuje / jak uzupelnic.
+ *
+ * @param proby     ile pelnych tekstow probowano pobrac (mianownik)
+ * @param porazki   kody bledow nieudanych pobran (z SaosError.code)
+ * @param bezTekstu ile pobranych orzeczen nie mialo tresci
+ */
+export function raportSkanu(proby: number, porazki: string[], bezTekstu: number): RaportSkanu {
+  const niesprawdzone = porazki.length + bezTekstu;
+  if (proby === 0 || niesprawdzone === 0) return { status: "ok", partial_result: null };
+
+  const powody: string[] = [];
+  const liczba = new Map<string, number>();
+  for (const k of porazki) liczba.set(k, (liczba.get(k) ?? 0) + 1);
+  for (const [k, n] of liczba) powody.push(`${POWOD[k] ?? `blad ${k}`} (${n})`);
+  if (bezTekstu > 0) powody.push(`orzeczenia bez tekstu w SAOS (${bezTekstu})`);
+
+  const daSiePonowic = porazki.some((k) => PONAWIALNE.has(k));
+  return {
+    status: "degraded",
+    partial_result: {
+      dlaczego: `Nie sprawdzono czesci pelnych tekstow: ${powody.join("; ")}.`,
+      czego_brakuje:
+        `${niesprawdzone} z ${proby} pelnych tekstow cytujacych orzeczen nie zostalo przeskanowanych ` +
+        "pod frazy przelamania linii - werdykt opiera sie tylko na reszcie i na fragmentach z wyszukiwania.",
+      jak_uzupelnic: daSiePonowic
+        ? "Ponow `saos_cite_check` pozniej (przy przerwie technicznej - za kilka godzin) albo sprawdz " +
+          "brakujace orzeczenia recznie przez `get_judgment`."
+        : "Sprawdz brakujace orzeczenia recznie przez `get_judgment` albo w bazie oficjalnej sadu.",
+      coverage: { unit: "pelne_teksty", total: proby, usable: proby - niesprawdzone },
+    },
+  };
+}
+
+/** Zdanie na CZELE odpowiedzi tekstowej - slaby model czyta poczatek, nie pola na koncu. */
+export function zdanieWynikNiepelny(r: RaportSkanu): string | null {
+  if (r.status !== "degraded" || !r.partial_result) return null;
+  const p = r.partial_result;
+  return `Wynik niepelny: ${p.czego_brakuje} ${p.dlaczego} ${p.jak_uzupelnic}`;
+}

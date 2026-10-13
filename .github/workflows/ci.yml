@@ -34,3 +34,6 @@ jobs:
 
       - name: Drift + unit tests (offline)
         run: npm test
+
+      - name: Package gate (runtime files in npm pack)
+        run: npm run test:package

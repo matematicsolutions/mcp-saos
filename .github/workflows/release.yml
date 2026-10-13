@@ -40,6 +40,15 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Do 2026-10-13 wydanie szlo `npm ci -> build -> publish` bez zadnego testu: bramki
+      # chronily tylko laptopa (ta sama klasa co flota Pythonowa 2026-08-24). Smoke (zywy SAOS)
+      # celowo poza wydaniem - awaria zrodla nie blokuje NASZEGO wydania.
+      - name: Run gates before publishing
+        run: |
+          npm test
+          npm run test:descriptors
+          npm run test:package
+
       # --provenance dropped: npm@latest global reinstall corrupts the bundled
       # sigstore module (MODULE_NOT_FOUND 'sigstore') on the runner image.
       - name: Publish to npm (granular token)

@@ -101,6 +101,43 @@ if (!typeMatch) {
 }
 
 // -----------------------------------------------------------------------------
+// 4. Kody zrodla z src/saos-http.ts - w obie strony (kanon MCP 6b, 2026-10-13)
+//    Do 2026-10-13 `upstream_error` byl jedynym kodem awarii zrodla: przerwa
+//    techniczna, 404 i bug w naszym formatterze wygladaly dla agenta tak samo.
+// -----------------------------------------------------------------------------
+
+const HTTP_SRC = readFileSync(join(__dirname, "..", "src", "saos-http.ts"), "utf-8");
+const kodyTyp = HTTP_SRC.match(/export type SaosErrorCode\s*=\s*([^;]+);/);
+const kodyZrodla = new Set(kodyTyp ? [...kodyTyp[1].matchAll(/"(\w+)"/g)].map((m) => m[1]) : []);
+const kodyTabeli = new Set(
+    [...(HTTP_SRC.match(/export const KODY[^{]*\{([\s\S]*?)\n\};/)?.[1] ?? "").matchAll(/^  (\w+): \{/gm)].map(
+        (m) => m[1],
+    ),
+);
+const rzucane = new Set([...HTTP_SRC.matchAll(/new SaosError\(\s*"(\w+)"/g)].map((m) => m[1]));
+const typIndex = new Set(typeMatch ? [...typeMatch[1].matchAll(/"(\w+)"/g)].map((m) => m[1]) : []);
+const wynikiIndex = new Set([...SRC.matchAll(/errorResult\([\s\S]*?,\s*"(\w+)"\s*\)/g)].map((m) => m[1]));
+
+if (kodyZrodla.size === 0 || kodyTabeli.size === 0 || rzucane.size === 0) {
+    failures.push("Pusta lista kodow z src/saos-http.ts = BLOKADA (regex nic nie znalazl).");
+}
+for (const k of kodyZrodla) {
+    if (!typIndex.has(k)) failures.push(`Kod zrodla '${k}' nie jest w type ErrorCode w index.ts.`);
+    if (!kodyTabeli.has(k)) failures.push(`Kod zrodla '${k}' nie ma wpisu w tabeli KODY.`);
+}
+for (const k of kodyTabeli) {
+    if (!kodyZrodla.has(k)) failures.push(`Wpis KODY '${k}' nie jest w typie SaosErrorCode.`);
+}
+for (const k of rzucane) {
+    if (!kodyZrodla.has(k)) failures.push(`new SaosError("${k}") - kodu nie ma w SaosErrorCode.`);
+}
+for (const k of typIndex) {
+    if (!rzucane.has(k) && !wynikiIndex.has(k)) {
+        failures.push(`ErrorCode '${k}' jest w typie, ale nic go nie rzuca (martwa obietnica w INSTRUCTIONS).`);
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Report
 // -----------------------------------------------------------------------------
 

@@ -57,6 +57,8 @@ npx @modelcontextprotocol/inspector node dist/index.js
 - **Do NOT modify the returned judgment text** - it is primary, integral data.
 - **Do NOT cache queries containing PII** - the connector is stateless. Caching happens at the client level (Patron) with a retention policy.
 - **No breaking changes without a MAJOR bump** in `package.json` and CHANGELOG.
+- **A `401`/`403` from SAOS means access controls changed: it requires human review.** It maps to `forbidden` (`retryable: false`). Never add code that retries it in a loop or bypasses new access controls automatically (rotated headers, scraped tokens, undocumented endpoints).
+- **A source failure must never look like an empty result.** Maintenance pages (HTTP 200 + HTML), non-JSON bodies and failed fetches get a named code from `KODY` in `src/saos-http.ts`; a partial scan is `status: degraded` with `partial_result`, never `ok`.
 
 ## Sources of truth (reading order)
 
